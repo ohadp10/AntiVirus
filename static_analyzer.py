@@ -1,12 +1,13 @@
 import hashlib
 import pefile
 import re
+import base64
 from capstone import *
 
 class StaticAnalyzer:
+    #יצירת מחלקה של המנתח
     def __init__(self, filepath):
         self.filepath = filepath
-        # מילון שישמור את כל התוצאות בצורה מסודרת (יעזור לנו מאוד כשנחבר את מסד הנתונים)
         self.results = {
             "hash": None,
             "is_pe": False,
@@ -14,199 +15,144 @@ class StaticAnalyzer:
             "is_packed": False,
             "found_ips": [],
             "found_urls": [],
-            "assembly_score": 0
+            "assembly_score": 0,
+            "section_hashes": {},  
+            "decoded_strings": []  
         }
 
+    #מחשב את החתימה של הקובץ
     def calculateHash(self):
-        print("\n--- 1. Calculating Hash ---")
         sha256_hash = hashlib.sha256()
         try:
             with open(self.filepath, "rb") as f:
                 for byte_block in iter(lambda: f.read(4096), b""):
                     sha256_hash.update(byte_block)
-            
             result = sha256_hash.hexdigest()
-
             self.results["hash"] = result
             return result
-        except FileNotFoundError:
-            return "File Wasn't found"
         except Exception as e:
             return str(e)
 
     def checkMagicNumber(self):
-        print("\n--- 2. Checking Magic Number ---")
         try:
             with open(self.filepath, "rb") as f:
                 magicbytes = f.read(2)
-                if magicbytes == b'MZ':
-                    self.results["is_pe"] = True
-                    return True
-                else:
-                    self.results["is_pe"] = False
-                    return False
-        except Exception as e:
-            return str(e)
+                self.results["is_pe"] = (magicbytes == b'MZ')
+                return self.results["is_pe"]
+        except Exception:
+            return False
 
+    #מנתח את הסקשנים של הקובץ
     def analyzeSections(self):
         try:
             pe = pefile.PE(self.filepath)
-            print("\n--- 3. Analyzing file's sections ---")
+            print("\n--- Analyzing Sections & Section Hashes ---")
             suspicious_sections = []
+            standard_sections = ['.text', '.data', '.rsrc', '.reloc', '.idata', '.pdata', '.rdata', '.didat']
 
             for section in pe.sections:
-                section_name = section.Name.decode('utf-8').strip('\x00')
-                print(f"{section_name:<15} | {hex(section.Misc_VirtualSize):<15} | {hex(section.SizeOfRawData):<15}")
-                standard_sections = ['.text', '.data', '.rsrc', '.reloc', '.idata', '.pdata', '.rdata', 'fothk', '.didat']
+                #ניקוי שם הסקשן
+                name = section.Name.decode('utf-8', errors='ignore').strip('\x00')
                 
-                if section_name not in standard_sections:
-                    suspicious_sections.append(section_name)
+                #חישוב חתימה לכל סקשן בנפרד
+                s_data = section.get_data()
+                s_hash = hashlib.sha256(s_data).hexdigest()
+                self.results['section_hashes'][name] = s_hash
+                
+                print(f" Section: {name:<10} | Hash: {s_hash[:15]}...")
 
-            if suspicious_sections:
-                print(f"\n[!] Warning: Found non-standard sections: {suspicious_sections}")
-                self.results["sections_ok"] = False
-                return False
-            else:
-                self.results["sections_ok"] = True
-                return True
+                if name not in standard_sections:
+                    suspicious_sections.append(name)
+
+            self.results["sections_ok"] = (len(suspicious_sections) == 0)
+            return self.results["sections_ok"]
         except Exception as e:
-            print("Error parsing pe file")
+            print(f"Error sections: {e}")
             return False
 
+    #בודק דחיסה בקובץ
     def checkForPacking(self):
         try:
             pe = pefile.PE(self.filepath)
-            print("\n--- 4. Checking for packing ---")
-
-            skippable_sections = ['.data', '.rsrc', '.reloc', '.bss', '.didat']
             is_packed = False
-            
             for section in pe.sections:
-                section_name = section.Name.decode('utf-8').strip('\x00')
-                virtualsize = section.Misc_VirtualSize
-                rawsize = section.SizeOfRawData
-
-                if "upx" in section_name.lower():
-                    print("UPX Detected")
+                name = section.Name.decode('utf-8', errors='ignore').strip('\x00')
+                # זיהוי Upx לפי שם הסקשן
+                if "upx" in name.lower():
                     is_packed = True
-
-                if section_name not in skippable_sections and rawsize > 0 and virtualsize > rawsize * 2:
-                    print("suspicious ratio")
+                # בדיקת יחס גודל חשוד
+                if section.SizeOfRawData > 0 and section.Misc_VirtualSize > section.SizeOfRawData * 2:
                     is_packed = True
-
+            
             self.results["is_packed"] = is_packed
+            return is_packed
+        except Exception:
+            return False
 
-            if not is_packed:
-                print("No obvious signs for packing")
-                return False
-            else:
-                return True
-
-        except Exception as e:
-            print(f"Error checking for packing: {e}")
-            return False       
-
+    #מחלץ כתובות URL ו-IP
     def extractStrings(self):
         try:
-            print("\n--- 5. Extracting Strings & IOCs ---")
+            print("\n--- Extracting & Decoding Strings ---")
             with open(self.filepath, "rb") as f:
                 data = f.read()
             
-            ascii_strings = re.findall(rb'[ -~]{4,}', data)
-            unicode_strings = re.findall(rb'(?:[\x20-\x7E][\x00]){4,}', data)
+            # חילוץ מחרוזות ASCII
+            strings = re.findall(rb'[ -~]{4,}', data)
+            decoded_raw = [s.decode("utf-8", errors="ignore") for s in strings]
             
-            decoded_ascii = [s.decode("utf-8") for s in ascii_strings]
-            decoded_unicode = [s.decode("utf-16le") for s in unicode_strings]
-            
-            all_strings = decoded_ascii + decoded_unicode
-            print(f"Total strings found: {len(all_strings)}")
+            # 1. חיפוש IPs ו-URLs
+            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+            url_pattern = re.compile(r'https?://[^\s/$.?#].[^\s]*')
             
             ips = set()
             urls = set()
-            
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            url_pattern = re.compile(r'(?:http[s]?://|www\.)(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
-
-            for s in all_strings:
+            for s in decoded_raw:
                 found_ips = ip_pattern.findall(s)
                 for ip in found_ips:
-                    if ip != "0.0.0.0" and not ip.startswith("127."): 
-                        ips.add(ip)
-
+                    if ip != "0.0.0.0" and not ip.startswith("127."): ips.add(ip)
+                
                 found_urls = url_pattern.findall(s)
-                for url in found_urls:
-                    urls.add(url)
-            
+                for url in found_urls: urls.add(url)
+
             self.results["found_ips"] = list(ips)
             self.results["found_urls"] = list(urls)
 
-            if ips:
-                print(f"[!] Found Potential IPs: {list(ips)[:5]}")
-            else:
-                print("[V] No suspicious IPs found.")
+            # 2. פענוח Base64
+            b64_pattern = re.compile(r'(?:[A-Za-z0-9+/]{4}){3,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')
+            for s in decoded_raw:
+                if b64_pattern.fullmatch(s):
+                    try:
+                        decoded = base64.b64decode(s).decode('utf-8', errors='ignore')
+                        if len(decoded) > 4 and decoded.isprintable():
+                            self.results["decoded_strings"].append(f"Base64: {decoded}")
+                    except: pass
+            
+            # 3. בדיקת XOR
+            for s in strings:
+                xor_decoded = "".join([chr(b ^ 0xAA) for b in s])
+                if xor_decoded.isprintable() and len(xor_decoded) > 10:
+                    self.results["decoded_strings"].append(f"XOR(0xAA): {xor_decoded}")
 
-            if urls:
-                print(f"[!] Found Potential URLs: {list(urls)[:5]}")
-            else:
-                print("[V] No URLs found.")
-                
         except Exception as e:
-            print(f"Error extracting strings: {e}")
+            print(f"Error strings: {e}")
 
+    #מחפש פקודות אסמבלי חשודות בקובץ
     def analyzeAssembly(self):
         try:
             pe = pefile.PE(self.filepath)
-            print("\n--- 6. Assembly Analysis (Heuristic Scoring) ---")
-
-            entry_point_rva = pe.OPTIONAL_HEADER.AddressOfEntryPoint
-            image_base = pe.OPTIONAL_HEADER.ImageBase
+            ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+            base = pe.OPTIONAL_HEADER.ImageBase
             
-            entry_section = None
-            for section in pe.sections:
-                if section.VirtualAddress <= entry_point_rva < section.VirtualAddress + section.Misc_VirtualSize:
-                    entry_section = section
-                    break
+            # מציאת הסקשן של ה-Entry Point
+            code_data = pe.get_data(ep, 100)
             
-            if not entry_section:
-                return 0 
-
-            entry_offset = entry_point_rva - entry_section.VirtualAddress + entry_section.PointerToRawData
+            md = Cs(CS_ARCH_X86, CS_MODE_64 if pe.FILE_HEADER.Machine == 0x8664 else CS_MODE_32)
+            score = 0
+            for i in md.disasm(code_data, base + ep):
+                if i.mnemonic in ['xor', 'jmp', 'call', 'loop']:
+                    score += 5 if i.mnemonic == 'xor' else 2
             
-            with open(self.filepath, "rb") as f:
-                f.seek(entry_offset)
-                code = f.read(100) 
-
-            if pe.FILE_HEADER.Machine == 0x8664:
-                md = Cs(CS_ARCH_X86, CS_MODE_64)
-            else:
-                md = Cs(CS_ARCH_X86, CS_MODE_32)
-
-            risk_score = 0
-            
-            for i in md.disasm(code, image_base + entry_point_rva):
-                mnemonic = i.mnemonic
-                
-                if mnemonic == 'xor':
-                    risk_score += 5   
-                elif mnemonic == 'jmp':
-                    risk_score += 2   
-                elif mnemonic == 'call':
-                    risk_score += 1   
-                if mnemonic in ['loop', 'loope', 'loopne']:
-                    risk_score += 10
-
-            print(f"Final Heuristic Score: {risk_score}")
-            self.results["assembly_score"] = risk_score
-            
-            SAFE_THRESHOLD = 15 
-            
-            if risk_score > SAFE_THRESHOLD:
-                print(f"[!] HIGH RISK: Score {risk_score} exceeds threshold. Flagged as Suspicious.")
-                return risk_score
-            else:
-                print(f"[V] LOW RISK: Score {risk_score} is within safe limits (Standard software behavior).")
-                return risk_score
-
-        except Exception as e:
-            print(f"Error: {e}")
+            self.results["assembly_score"] = score
+            return score
+        except Exception:
             return 0
