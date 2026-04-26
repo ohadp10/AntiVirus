@@ -17,8 +17,63 @@ class StaticAnalyzer:
             "found_urls": [],
             "assembly_score": 0,
             "section_hashes": {},  
-            "decoded_strings": []  
+            "decoded_strings": [],
+            "header_warnings": [],  
+            "ep_check": "Unknown"  
         }
+    #בודק את הכותרת של הקובץ    
+    def analyzeHeader(self):
+        try:
+            pe = pefile.PE(self.filepath)
+            print("\n--- Analyzing PE Header ---")
+            
+            # בדיקת גודל ה-Optional Header
+            opt_header_size = pe.FILE_HEADER.SizeOfOptionalHeader
+            is_64bit = pe.FILE_HEADER.Machine == 0x8664
+            expected_size = 240 if is_64bit else 224
+            
+            if opt_header_size != expected_size:
+                self.results["header_warnings"].append(f"Non-standard Optional Header size: {opt_header_size}")
+
+            # בדיקת ה-TimeDateStamp
+            timestamp = pe.FILE_HEADER.TimeDateStamp
+            import datetime
+            date = datetime.datetime.fromtimestamp(timestamp)
+            if date.year > datetime.datetime.now().year or date.year < 2000:
+                self.results["header_warnings"].append(f"Suspicious TimeDateStamp: {date}")
+
+            # בדיקת כמות הסקשנים
+            if pe.FILE_HEADER.NumberOfSections > 10:
+                self.results["header_warnings"].append(f"High number of sections: {pe.FILE_HEADER.NumberOfSections}")
+                
+        except Exception as e:
+            print(f"Error in analyzeHeader: {e}")
+
+    #מנתח את הEntryPoint של הקובץ
+    def analyzeEntryPoint(self):
+        try:
+            pe = pefile.PE(self.filepath)
+            print("\n--- Checking Entry Point ---")
+            ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+            
+            found_section = None
+            for section in pe.sections:
+                # בדיקה אם ה-EP נמצא בתוך הטווח של הסקשן
+                if section.VirtualAddress <= ep < section.VirtualAddress + section.Misc_VirtualSize:
+                    found_section = section
+                    break
+            
+            if found_section:
+                name = found_section.Name.decode('utf-8', errors='ignore').strip('\x00')
+                # בדיקה אם ה-EP מצביע לסקשן חשוד
+                if name not in ['.text', 'CODE']:
+                    self.results["ep_check"] = f"Suspicious (EP in {name})"
+                else:
+                    self.results["ep_check"] = "Safe"
+            else:
+                self.results["ep_check"] = "Malicious (EP outside sections)"
+        except Exception as e:
+            print(f"Error in analyzeEntryPoint: {e}")
 
     #מחשב את החתימה של הקובץ
     def calculateHash(self):
