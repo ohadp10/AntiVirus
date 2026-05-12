@@ -1,5 +1,7 @@
 import pymysql
 import json
+import requests
+import time
 
 #יצירת מחלקה של מנהל מסד הנתונים
 class DatabaseManager:
@@ -8,6 +10,8 @@ class DatabaseManager:
         self.user = user
         self.password = password
         self.database_name = "malware_detection_db"
+        # המפתח האישי שלך ל-VirusTotal
+        self.api_key = "YOUR_API_KEY_HERE" 
 
     def connect(self):
         return pymysql.connect(
@@ -18,10 +22,69 @@ class DatabaseManager:
             charset='utf8mb4'
         )
 
+    def check_virustotal_hash(self, file_hash):
+        """בודק את חתימת הקובץ ב-VirusTotal"""
+        url = f"https://www.virustotal.com/api/v3/files/{file_hash}"
+        headers = {"accept": "application/json", "x-apikey": self.api_key}
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                stats = response.json()['data']['attributes']['last_analysis_stats']
+                return stats['malicious']
+            return 0
+        except: return 0
+
+    def check_virustotal_ip(self, ip):
+        """בדיקת כתובת IP ב-VirusTotal"""
+        url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
+        headers = {"accept": "application/json", "x-apikey": self.api_key}
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                stats = response.json()['data']['attributes']['last_analysis_stats']
+                return stats['malicious']
+            return 0
+        except: return 0
+
+    def check_virustotal_url(self, target_url):
+        """בדיקת URL ב-VirusTotal"""
+        import base64
+        url_id = base64.urlsafe_b64encode(target_url.encode()).decode().strip("=")
+        url = f"https://www.virustotal.com/api/v3/urls/{url_id}"
+        headers = {"accept": "application/json", "x-apikey": self.api_key}
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                stats = response.json()['data']['attributes']['last_analysis_stats']
+                return stats['malicious']
+            return 0
+        except: return 0
+
     #מחליט האם הקובץ לגיטימי או לא
     def evaluate_threat(self, results_dict):
         verdict = "Unknown"
         reasons = []
+        
+        # בדיקה ב-VirusTotal ל-Hash
+        vt_hash_res = self.check_virustotal_hash(results_dict['hash'])
+        if vt_hash_res > 0:
+            reasons.append(f"VirusTotal: {vt_hash_res} engines flagged this Hash")
+            verdict = "Malicious"
+
+        # בדיקה ב-VirusTotal לכתובות IP שנמצאו
+        for ip in results_dict.get('found_ips', []):
+            vt_ip_res = self.check_virustotal_ip(ip)
+            if vt_ip_res > 0:
+                reasons.append(f"VirusTotal: IP {ip} flagged by {vt_ip_res} engines")
+                verdict = "Malicious"
+
+        # בדיקה ב-VirusTotal לכתובות URL שנמצאו
+        for target_url in results_dict.get('found_urls', []):
+            vt_url_res = self.check_virustotal_url(target_url)
+            if vt_url_res > 0:
+                reasons.append(f"VirusTotal: URL {target_url} flagged by {vt_url_res} engines")
+                verdict = "Malicious"
+
         try:
             conn = self.connect()
             with conn.cursor() as cursor:
@@ -31,12 +94,12 @@ class DatabaseManager:
                 if res:
                     return res[0].capitalize(), [f"Recognized Hash: {res[1]}"]
 
-                # בדיקת IPs
+                # בדיקה מול מאגר IOCs מקומי
                 for ip in results_dict.get('found_ips', []):
                     cursor.execute("SELECT description FROM known_iocs WHERE indicator = %s", (ip,))
                     if cursor.fetchone():
                         verdict = "Malicious"
-                        reasons.append(f"Blacklisted IP: {ip}")
+                        reasons.append(f"Blacklisted IP (Local DB): {ip}")
 
                 if results_dict['is_packed']: reasons.append("File is packed (UPX/Other)")
                 if results_dict['assembly_score'] > 15: reasons.append("High assembly risk score")
