@@ -1,9 +1,14 @@
 import os
+import shutil
+import subprocess
+import time
 from static_analyzer import StaticAnalyzer
 from database_manager import DatabaseManager
+from dynamic_analyzer import DynamicAnalyzer
 
 if __name__ == "__main__":
-    file_path = r"C:\Windows\System32\notepad.exe"
+    # עדכן פה את הנתיב ל-exe החדש שלך!
+    file_path = r"C:\Users\user\Desktop\MalwareDetection\dist\dummy_virus.exe" 
     db = DatabaseManager()
 
     if os.path.exists(file_path):
@@ -13,50 +18,69 @@ if __name__ == "__main__":
         
         analyzer = StaticAnalyzer(file_path)
         
-        # 1. חישוב חתימת הקובץ
         print(f"[*] Calculating SHA256 Hash...")
         analyzer.calculateHash()
         print(f"    Hash: {analyzer.results['hash']}")
         
-        # 2. אימות שמדובר בקובץ הרצה תקין (Magic Number)
         if analyzer.checkMagicNumber():
-            
-            # --- בדיקות ה-Header וה-Entry Point החדשות ---
             analyzer.analyzeHeader()
             analyzer.analyzeEntryPoint()
-            
-            # --- המשך הבדיקות הקיימות ---
             analyzer.analyzeSections()
             analyzer.checkForPacking()
             analyzer.extractStrings()
             analyzer.analyzeAssembly()
             
-            # 3. קבלת החלטה סופית ממנוע החוקים במסד הנתונים
             print("\n[*] Evaluating threat intelligence...")
             verdict, reasons = db.evaluate_threat(analyzer.results)
             
-            # הדפסת התוצאה למסך באופן מסודר
+            if analyzer.results.get("header_warnings") and verdict == "Safe":
+                verdict = "Suspicious"
+                reasons.append("Marked as Suspicious due to PE Header anomalies")
+
+            print(f"\n[i] Static Analysis Verdict: {verdict}")
+            
+            # שלב הניתוח הדינמי
+            if verdict == "Suspicious":
+                print("\n" + "!"*50)
+                print("[!] FILE IS SUSPICIOUS! Launching Dynamic Sandbox Analysis...")
+                print("!"*50)
+                
+                sandbox_folder = r"C:\Temp\SandboxTest"
+                sandbox_file_path = os.path.join(sandbox_folder, os.path.basename(file_path))
+                
+                shutil.copy(file_path, sandbox_file_path)
+                dynamic = DynamicAnalyzer(sandbox_dir=sandbox_folder)
+                
+                dynamic.start_monitoring()
+                
+                print(f"[*] Executing {os.path.basename(file_path)} inside sandbox...")
+                process = subprocess.Popen(sandbox_file_path, shell=True)
+                
+                print("[*] Monitoring file and network behavior for 10 seconds...")
+                # פה השינוי: במקום לישון 10 שניות, אנחנו בודקים את הרשת כל שנייה!
+                for _ in range(10):
+                    dynamic.check_network_activity()
+                    time.sleep(1)
+                
+                process.terminate()
+                dynamic_logs = dynamic.stop_monitoring()
+                
+                if len(dynamic_logs) > 0:
+                    verdict = "Malicious"
+                    reasons.append(f"Dynamic Analysis: Detected {len(dynamic_logs)} suspicious actions (Files/Network)")
+                else:
+                    verdict = "Safe"
+                    reasons.append("Dynamic Analysis: No harmful modifications detected")
+            
             print("\n" + "#"*40)
-            print(f" FINAL VERDICT: >> {verdict} <<")
+            print(f" FINAL INTEGRATED VERDICT: >> {verdict} <<")
             print("#"*40)
             
-            if analyzer.results.get("header_warnings"):
-                print("\n[!] Header Anomalies Detected:")
-                for warn in analyzer.results["header_warnings"]:
-                    print(f"    - {warn}")
-            
             if reasons:
-                print("\n[i] Detection Indicators:")
+                print("\n[i] Combined Indicators:")
                 for r in reasons: 
                     print(f"    - {r}")
             
-            if analyzer.results.get("found_ips"):
-                print(f"\n[+] Extracted IPs: {analyzer.results['found_ips']}")
-                
-            if analyzer.results.get("found_urls"):
-                print(f"\n[+] Extracted URLs: {analyzer.results['found_urls']}")
-
-            # 4. שמירת כל תוצאות הסריקה המפורטות ל-DB
             db.save_scan_results(analyzer.results, verdict)
             print("\n[V] Detailed scan report saved to MySQL.")
             
