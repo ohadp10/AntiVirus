@@ -1,87 +1,56 @@
-import os
 import time
-import psutil
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+import boto3
+import paramiko # עבור חיבור SSH/SFTP למכונה המרוחקת
+import os
 
-# מחלקה שאחראית לטפל באירועי מערכת הקבצים
-class SandboxEventHandler(FileSystemEventHandler):
-    def __init__(self):
-        self.logs = []
-
-    def log_event(self, action, details):
-        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-        log_entry = f"[{timestamp}] {action}: {details}"
-        self.logs.append(log_entry)
-        print(log_entry)
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self.log_event("FILE CREATED", event.src_path)
-
-    def on_deleted(self, event):
-        if not event.is_directory:
-            self.log_event("FILE DELETED", event.src_path)
-
-    def on_modified(self, event):
-        if not event.is_directory:
-            self.log_event("FILE MODIFIED", event.src_path)
-
-class DynamicAnalyzer:
-    def __init__(self, sandbox_dir=r"C:\Temp\SandboxTest"):
-        self.sandbox_dir = sandbox_dir
-        self.event_handler = SandboxEventHandler()
-        self.observer = Observer()
-        self.is_monitoring = False
-        self.baseline_connections = set()
+class CloudDynamicAnalyzer:
+    def __init__(self, file_path):
+        self.file_path = file_path
         
-        if not os.path.exists(self.sandbox_dir):
-            os.makedirs(self.sandbox_dir)
-
-    def _get_active_ips(self):
-        """פונקציה פנימית שאוספת את כל ה-IPs שהמחשב מחובר אליהם כרגע"""
-        ips = set()
-        try:
-            for conn in psutil.net_connections(kind='inet'):
-                if conn.status == 'ESTABLISHED' and conn.raddr:
-                    ips.add(conn.raddr.ip)
-        except Exception: pass
-        return ips
-            
-    def start_monitoring(self):
-        """מתחיל להקליט פעולות בתיקייה וברשת"""
-        if not self.is_monitoring:
-            # לוקחים "צילום מצב" של הרשת לפני שהוירוס עולה
-            self.baseline_connections = self._get_active_ips()
-            
-            self.observer.schedule(self.event_handler, self.sandbox_dir, recursive=True)
-            self.observer.start()
-            self.is_monitoring = True
-            
-            print("\n" + "="*50)
-            print(f"[*] DYNAMIC ANALYZER STARTED")
-            print(f"    Monitoring Directory: {self.sandbox_dir}")
-            print(f"    Baseline Network Connections Filtered: {len(self.baseline_connections)} IPs")
-            print("="*50 + "\n")
-
-    def check_network_activity(self):
-        """פונקציה שבודקת בזמן אמת אם הוירוס פתח חיבור רשת חדש"""
-        if not self.is_monitoring: return
+        # לכאן תזין את פרטי החשבון כשיהיו לך
+        self.aws_access_key = "YOUR_AWS_ACCESS_KEY"
+        self.aws_secret_key = "YOUR_AWS_SECRET_KEY"
+        self.region = "eu-central-1" # אזור השרת
+        self.instance_id = "YOUR_EC2_INSTANCE_ID" # המזהה של המכונה הווירטואלית
+        self.key_pem_path = r"C:\path\to\your\aws_key.pem" # מפתח ההתחברות למכונה
         
-        current_ips = self._get_active_ips()
-        new_ips = current_ips - self.baseline_connections
-        
-        for ip in new_ips:
-            if not ip.startswith("127.") and ip != "0.0.0.0":
-                self.event_handler.log_event("NETWORK CONNECTION ALERT", f"Outbound traffic to IP: {ip}")
-                # מוסיפים לבייסליין כדי לא להתריע פעמיים על אותו IP
-                self.baseline_connections.add(ip)
+        # יצירת מופע התחברות ל-AWS
+        self.ec2 = boto3.client(
+            'ec2',
+            region_name=self.region,
+            aws_access_key_id=self.aws_access_key,
+            aws_secret_access_key=self.aws_secret_key
+        )
 
-    def stop_monitoring(self):
-        if self.is_monitoring:
-            self.observer.stop()
-            self.observer.join()
-            self.is_monitoring = False
-            print("\n[*] Dynamic monitoring stopped.")
-            
-        return self.event_handler.logs
+    def start_sandbox_instance(self):
+        """מדליק את המכונה ב-AWS"""
+        print("[*] Cloud: Starting EC2 Sandbox Instance...")
+        self.ec2.start_instances(InstanceIds=[self.instance_id])
+        
+        # מחכה שהמכונה תעלה ותקבל IP
+        waiter = self.ec2.get_waiter('instance_running')
+        waiter.wait(InstanceIds=[self.instance_id])
+        
+        # קבלת ה-IP הציבורי של המכונה
+        response = self.ec2.describe_instances(InstanceIds=[self.instance_id])
+        public_ip = response['Reservations'][0]['Instances'][0].get('PublicIpAddress')
+        print(f"[+] Cloud: Sandbox is UP. IP: {public_ip}")
+        return public_ip
+
+    def stop_sandbox_instance(self):
+        """מכבה את המכונה בסיום הניתוח"""
+        print("[*] Cloud: Stopping EC2 Sandbox Instance...")
+        self.ec2.stop_instances(InstanceIds=[self.instance_id])
+        print("[+] Cloud: Sandbox is DOWN.")
+
+    def run_analysis(self):
+        """פונקציה שתעלה את הקובץ לענן ותריץ אותו"""
+        print(f"[*] Cloud: Preparing to analyze {os.path.basename(self.file_path)} in AWS...")
+        # 1. הדלקת המכונה
+        # 2. העברת הקובץ ב-SFTP
+        # 3. הפעלת הסקריפט מרחוק
+        # 4. משיכת הלוגים חזרה
+        # 5. כיבוי המכונה
+        
+        # בינתיים מחזירים לוגים ריקים כהכנה
+        return ["Cloud Analysis is ready to be fully implemented."]
