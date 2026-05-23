@@ -1,213 +1,240 @@
-import hashlib
 import pefile
-import re
-import base64
-from capstone import *
+import subprocess
+import hashlib
 
 class StaticAnalyzer:
-    #יצירת מחלקה של המנתח
-    def __init__(self, filepath):
-        self.filepath = filepath
+    def __init__(self, file_path, db_manager=None, vt_api=None):
+        self.file_path = file_path
+        self.db_manager = db_manager
+        self.vt_api = vt_api
+
         self.results = {
-            "hash": None,
-            "is_pe": False,
-            "sections_ok": False,
+            "is_valid_pe": False,
             "is_packed": False,
-            "found_ips": [],
-            "found_urls": [],
-            "assembly_score": 0,
-            "section_hashes": {},  
-            "decoded_strings": [],
-            "header_warnings": [],  
-            "ep_check": "Unknown"  
+            "unpacked_succesfull": False,
+            "file_hash": "",
+            "section_hashes": {},
+            "is_hash_malicious": "unknown", # "malicious", "safe", "unknown"
+            "urls_ips": [],
+            "assembly_commands": [],
+            "assembly_risk_score": 0,
+            "is_assembly_suspicious": False
         }
-    #בודק את הכותרת של הקובץ    
-    def analyzeHeader(self):
+        
+    def verify_pe(self):
+        """
+        1: Magic Number analyzing and Entry Point checking
+        """
+        print("[*] Step 1: Verifying PE Header and Entry Point...")
         try:
-            pe = pefile.PE(self.filepath)
-            print("\n--- Analyzing PE Header ---")
-            
-            # בדיקת גודל ה-Optional Header
-            opt_header_size = pe.FILE_HEADER.SizeOfOptionalHeader
-            is_64bit = pe.FILE_HEADER.Machine == 0x8664
-            expected_size = 240 if is_64bit else 224
-            
-            if opt_header_size != expected_size:
-                self.results["header_warnings"].append(f"Non-standard Optional Header size: {opt_header_size}")
+            pe = pefile.PE(self.file_path)
 
-            # בדיקת ה-TimeDateStamp
-            timestamp = pe.FILE_HEADER.TimeDateStamp
-            import datetime
-            date = datetime.datetime.fromtimestamp(timestamp)
-            if date.year > datetime.datetime.now().year or date.year < 2000:
-                self.results["header_warnings"].append(f"Suspicious TimeDateStamp: {date}")
+            if hex(pe.DOS_HEADER.e_magic) == '0x5a4d':
+                print("[+] Success: Valid PE file detected (Magic Number: 0x4D5A).")
+                self.results["is_valid_pe"] = True
+                
+                # --- בדיקת נקודת הכניסה (Entry Point) ---
+                ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+                ep_section = None
+                
+                # מעבר על כל הסקשנים כדי למצוא איפה נופלת כתובת הכניסה
+                for section in pe.sections:
+                    # בודקים אם הכתובת נמצאת בטווח של הסקשן הנוכחי בזיכרון
+                    if section.VirtualAddress <= ep < section.VirtualAddress + section.Misc_VirtualSize:
+                        ep_section = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
+                        break
+                
+                # שמירת הנתונים במילון התוצאות
+                self.results["entry_point"] = hex(ep)
+                self.results["ep_section"] = ep_section
+                
+                print(f"[*] Entry Point Address: {hex(ep)}")
+                if ep_section:
+                    print(f"[*] Entry Point is located in section: {ep_section}")
+                    
+                    # בדיקה אם הסקשן שגרתי או חשוד
+                    standard_code_sections = ['.text', 'code', 'CODE', '.code']
+                    if ep_section.lower() not in standard_code_sections:
+                        print("[!] Warning: Entry Point is in a non-standard section! This is highly suspicious.")
+                        self.results["is_ep_suspicious"] = True
+                    else:
+                        print("[+] Entry Point is in a standard code section.")
+                        self.results["is_ep_suspicious"] = False
+                else:
+                    print("[-] Warning: Could not map Entry Point to any known section.")
+                    self.results["is_ep_suspicious"] = True
 
-            # בדיקת כמות הסקשנים
-            if pe.FILE_HEADER.NumberOfSections > 10:
-                self.results["header_warnings"].append(f"High number of sections: {pe.FILE_HEADER.NumberOfSections}")
+            else:
+                #later add alert in gui that the file is not .exe
+                print("[-] Failed: The Magic Number does not match a valid PE file.")
+                self.results["is_valid_pe"] = False
                 
         except Exception as e:
-            print(f"Error in analyzeHeader: {e}")
+            print(f"[-] Error parsing file (Might not be a PE file at all): {e}")
+            self.results["is_valid_pe"] = False
 
-    #מנתח את הEntryPoint של הקובץ
-    def analyzeEntryPoint(self):
+
+    def detect_and_unpack(self):
+        """
+        detecting if the file is packed if it is packed it tries to unpack it and change the 
+        """
+        print("[*] Step 2: Checking for packed executable (UPX)...")
         try:
-            pe = pefile.PE(self.filepath)
-            print("\n--- Checking Entry Point ---")
-            ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+            pe = pefile.PE(self.file_path)
+            is_packed = False
             
-            found_section = None
+            # מעבר על הסקשנים לאיתור חתימות דחיסה
             for section in pe.sections:
-                # בדיקה אם ה-EP נמצא בתוך הטווח של הסקשן
-                if section.VirtualAddress <= ep < section.VirtualAddress + section.Misc_VirtualSize:
-                    found_section = section
+                sec_name = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
+                if "UPX" in sec_name.upper():
+                    is_packed = True
                     break
             
-            if found_section:
-                name = found_section.Name.decode('utf-8', errors='ignore').strip('\x00')
-                # בדיקה אם ה-EP מצביע לסקשן חשוד
-                if name not in ['.text', 'CODE']:
-                    self.results["ep_check"] = f"Suspicious (EP in {name})"
-                else:
-                    self.results["ep_check"] = "Safe"
-            else:
-                self.results["ep_check"] = "Malicious (EP outside sections)"
-        except Exception as e:
-            print(f"Error in analyzeEntryPoint: {e}")
-
-    #מחשב את החתימה של הקובץ
-    def calculateHash(self):
-        sha256_hash = hashlib.sha256()
-        try:
-            with open(self.filepath, "rb") as f:
-                for byte_block in iter(lambda: f.read(4096), b""):
-                    sha256_hash.update(byte_block)
-            result = sha256_hash.hexdigest()
-            self.results["hash"] = result
-            return result
-        except Exception as e:
-            return str(e)
-
-    def checkMagicNumber(self):
-        try:
-            with open(self.filepath, "rb") as f:
-                magicbytes = f.read(2)
-                self.results["is_pe"] = (magicbytes == b'MZ')
-                return self.results["is_pe"]
-        except Exception:
-            return False
-
-    #מנתח את הסקשנים של הקובץ
-    def analyzeSections(self):
-        try:
-            pe = pefile.PE(self.filepath)
-            print("\n--- Analyzing Sections & Section Hashes ---")
-            suspicious_sections = []
-            standard_sections = ['.text', '.data', '.rsrc', '.reloc', '.idata', '.pdata', '.rdata', '.didat']
-
-            for section in pe.sections:
-                #ניקוי שם הסקשן
-                name = section.Name.decode('utf-8', errors='ignore').strip('\x00')
-                
-                #חישוב חתימה לכל סקשן בנפרד
-                s_data = section.get_data()
-                s_hash = hashlib.sha256(s_data).hexdigest()
-                self.results['section_hashes'][name] = s_hash
-                
-                print(f" Section: {name:<10} | Hash: {s_hash[:15]}...")
-
-                if name not in standard_sections:
-                    suspicious_sections.append(name)
-
-            self.results["sections_ok"] = (len(suspicious_sections) == 0)
-            return self.results["sections_ok"]
-        except Exception as e:
-            print(f"Error sections: {e}")
-            return False
-
-    #בודק דחיסה בקובץ
-    def checkForPacking(self):
-        try:
-            pe = pefile.PE(self.filepath)
-            is_packed = False
-            for section in pe.sections:
-                name = section.Name.decode('utf-8', errors='ignore').strip('\x00')
-                # זיהוי Upx לפי שם הסקשן
-                if "upx" in name.lower():
-                    is_packed = True
-                # בדיקת יחס גודל חשוד
-                if section.SizeOfRawData > 0 and section.Misc_VirtualSize > section.SizeOfRawData * 2:
-                    is_packed = True
-            
             self.results["is_packed"] = is_packed
-            return is_packed
-        except Exception:
+            
+            if is_packed:
+                print("[!] Packed file detected (UPX sections found).")
+                print("[*] Attempting to unpack using UPX...")
+                
+                original_file_path = self.file_path
+                self.file_path.replace(".exe", "_unpacked.exe")
+                
+                process = subprocess.run(['upx', '-d', original_file_path, '-o', self.file_path], capture_output=True, text=True) 
+
+                if process.returncode == 0:
+                    print(f"[+] Unpacked successfully to: {self.file_path}")
+                    # עדכון נתיב הקובץ במחלקה כדי שהשלבים הבאים ינתחו את הקובץ האמיתי
+                    self.results["unpacked_successfull"] = True
+                else:
+                    print(f"[-] Failed to unpack. Error: {process.stderr}")
+                    self.results["unpacked_successfull"] = False
+            else:
+                print("[+] File does not appear to be packed.")
+                
+        except Exception as e:
+            print(f"[-] Error during unpacking analysis: {e}")
+
+    
+    def calculate_and_check_hashes(self):
+        """
+        calculating hash for the whole file, checks with DB and virtusTotal and than checks Section hashes with DB 
+        """
+        print("[*] Step 3: Calculating Hashes and Checking Reputation...")
+        
+        # 1. חישוב חתימת Hash מלאה על כל הקובץ
+        hasher = hashlib.sha256()
+        try:
+            with open(self.file_path, 'rb') as f:
+                buf = f.read()
+                hasher.update(buf)
+            full_file_hash = hasher.hexdigest()
+            self.results["file_hash"] = full_file_hash
+            print(f"[*] Full File SHA-256: {full_file_hash}")
+        except Exception as e:
+            print(f"[-] Error calculating file hash: {e}")
             return False
 
-    #מחלץ כתובות URL ו-IP
-    def extractStrings(self):
-        try:
-            print("\n--- Extracting & Decoding Strings ---")
-            with open(self.filepath, "rb") as f:
-                data = f.read()
+        if self.db_manager:
+            db_verdict = self.db_manager.check_hash_file(full_file_hash)
             
-            # חילוץ מחרוזות ASCII
-            strings = re.findall(rb'[ -~]{4,}', data)
-            decoded_raw = [s.decode("utf-8", errors="ignore") for s in strings]
-            
-            # 1. חיפוש IPs ו-URLs
-            ip_pattern = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
-            url_pattern = re.compile(r'https?://[^\s/$.?#].[^\s]*')
-            
-            ips = set()
-            urls = set()
-            for s in decoded_raw:
-                found_ips = ip_pattern.findall(s)
-                for ip in found_ips:
-                    if ip != "0.0.0.0" and not ip.startswith("127."): ips.add(ip)
+            if db_verdict == 'malicious':
+                print("[!] Alert: File hash found in local DB and marked as Malicious!")
+                self.results["is_hash_malicious"] = "malicious"
+                return 
                 
-                found_urls = url_pattern.findall(s)
-                for url in found_urls: urls.add(url)
+            elif db_verdict == 'safe':
+                print("[+] Database: File hash is known and marked as Safe.")
+                self.results["is_hash_malicious"] = "safe"
+                return
+        else:
+            print("[-] Warning: Database Manager is not connected.")
 
-            self.results["found_ips"] = list(ips)
-            self.results["found_urls"] = list(urls)
-
-            # 2. פענוח Base64
-            b64_pattern = re.compile(r'(?:[A-Za-z0-9+/]{4}){3,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')
-            for s in decoded_raw:
-                if b64_pattern.fullmatch(s):
-                    try:
-                        decoded = base64.b64decode(s).decode('utf-8', errors='ignore')
-                        if len(decoded) > 4 and decoded.isprintable():
-                            self.results["decoded_strings"].append(f"Base64: {decoded}")
-                    except: pass
+        
             
-            # 3. בדיקת XOR
-            for s in strings:
-                xor_decoded = "".join([chr(b ^ 0xAA) for b in s])
-                if xor_decoded.isprintable() and len(xor_decoded) > 10:
-                    self.results["decoded_strings"].append(f"XOR(0xAA): {xor_decoded}")
+        if self.vt_api:
+            vt_verdict = self.vt_api.check_file_hash(full_file_hash)
+            if vt_verdict == 'malicious':
+                print("[!] Alert: File hash found in VirusTotal and marked as Malicious!")
+                self.results["is_hash_malicious"] = "malicious"
+                return 
+            elif vt_verdict == 'safe':
+                print("[+] VirusTotal: File hash is known and marked as Safe.")
+                self.results["is_hash_malicious"] = "safe"
+                return
+        else:
+            print("[-] Warning: VirusTotal API is not connected.")
 
-        except Exception as e:
-            print(f"Error strings: {e}")
-
-    #מחפש פקודות אסמבלי חשודות בקובץ
-    def analyzeAssembly(self):
+            
+        print("[+] Full file hash is unknown. Proceeding to section hashes...")
+        self.results["is_hash_malicious"] = "unknown"
+        
+        
+        # 4. חישוב Hash לכל סקשן בנפרד ובדיקה
         try:
-            pe = pefile.PE(self.filepath)
-            ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
-            base = pe.OPTIONAL_HEADER.ImageBase
+            pe = pefile.PE(self.file_path)
+            self.db_manager.open_connection()
+            for section in pe.sections:
+                sec_name = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
+                sec_data = section.get_data()
+                
+                if sec_data:
+                    sec_hash = hashlib.sha256(sec_data).hexdigest()
+                    print(f"    -> Section {sec_name}: {sec_hash}")
+                    
+                    status = "unknown"
+                    
+                    # בדיקת הסקשן מול מסד הנתונים
+                    if self.db_manager:
+                        db_sec_verdict = self.db_manager.check_section_hash(sec_name, sec_hash)
+                        if db_sec_verdict:
+                            status = db_sec_verdict
+                            if status == "malicious":
+                                print(f"       [!] Alert: Section '{sec_name}' identified as MALICIOUS in DB!")
+                            elif status == "safe":
+                                print(f"       [+] Section '{sec_name}' identified as SAFE in DB.")
+                    
+                    # שמירת התוצאה
+                    self.results["section_hashes"][sec_name] = {
+                        "hash": sec_hash,
+                        "status": status
+                    }
+                    
+        except Exception as e:
+            print(f"[-] Error calculating section hashes: {e}")
+
+        finally:
+            self.db_manager.close_connection()            
+
+
+    def begin_analyzing(self):
+        """
+        main function that manages all of the analyzing steps
+        """
+        print("\n" + "="*45)
+        print("--- STARTING ADVANCED STATIC ANALYSIS ---")
+        print("="*45 + "\n")
+        
+        # 1. PE verification
+        self.verify_pe()
+
+        # GUI Error: file is not pe
+        if self.results["is_valid_pe"] == False:
+            return
             
-            # מציאת הסקשן של ה-Entry Point
-            code_data = pe.get_data(ep, 100)
-            
-            md = Cs(CS_ARCH_X86, CS_MODE_64 if pe.FILE_HEADER.Machine == 0x8664 else CS_MODE_32)
-            score = 0
-            for i in md.disasm(code_data, base + ep):
-                if i.mnemonic in ['xor', 'jmp', 'call', 'loop']:
-                    score += 5 if i.mnemonic == 'xor' else 2
-            
-            self.results["assembly_score"] = score
-            return score
-        except Exception:
-            return 0
+        # 2. UPX detect and unpacking
+        self.detect_and_unpack()
+
+        # GUI Error: file is packed and was not able to unpack
+        if self.results["is_packed"] == True and self.results["unpacked_successfull"] == False:
+            return
+
+        # 3. Calculating Hash
+        self.calculate_and_check_hashes()
+
+        if self.results["is_hash_malicious"] == "malicious" or "safe":
+            return
+
+        # 4. compare_with_virustotal()
+        # 5. extract_strings()
+        # 6. disassemble_code()
+        
