@@ -1,11 +1,16 @@
 import pymysql
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 
 class DatabaseManager:
     def __init__(self):
         self.config = {
             'host': '127.0.0.1',
             'user': 'root',
-            'password': 'ohadp2006',
+            'password': os.getenv("db_password"),
             'database': 'malware_detection', 
             'connect_timeout': 3
         }
@@ -93,3 +98,30 @@ class DatabaseManager:
             print(f"[-] Database Query Error (Section Hash): {err}")
             return None
             
+    def check_ips_urls(self, ioc_value, ioc_type):
+        """
+        בודקת בטבלת known_iocs האם קיים אינדיקטור (IP או URL) לפי הסוג והערך שלו.
+        מחזירה 'safe', 'malicious' או None אם לא נמצא.
+        """
+        print(f"[*] Database: Checking IOC ({ioc_type}): {ioc_value}")
+        
+        if not self.connection or not self.connection.open:
+            print("[-] Database: Cannot execute query without an active connection.")
+            return None
+            
+        try:
+            # השאילתה בודקת התאמה גם של הערך וגם של הסוג (IP/URL)
+            query = "SELECT verdict FROM known_iocs WHERE value = %s AND type = %s"
+            self.cursor.execute(query, (ioc_value, ioc_type))
+            result = self.cursor.fetchone()
+            
+            if result:
+                verdict = result[0]
+                print(f"[+] Database: IOC match found! Verdict: {verdict}")
+                return verdict
+                
+            return None
+            
+        except pymysql.MySQLError as err:
+            print(f"[-] Database Query Error (IOC Check): {err}")
+            return None

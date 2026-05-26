@@ -1,6 +1,7 @@
 import os
 from static_analyzer import StaticAnalyzer
 from database_manager import DatabaseManager
+from dynamic_analyzer import DynamicAnalyzer
 from virus_total_api import VirusTotalAPI
 
 def main():
