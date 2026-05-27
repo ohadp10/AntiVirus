@@ -44,6 +44,7 @@ class StaticAnalyzer:
             "suspicious_imports": [],      # רשימה מסוננת של פונקציות מסוכנות במיוחד שנמצאו
             "assembly_risk_score": 0,      # ציון הסיכון שחושב מניתוח פקודות האסמבלי
             "assembly_heuristics": {},     # אילו טקטיקות התחמקות ספציפיות זוהו בקוד
+            "call_jmp_table": [],
             "is_assembly_suspicious": False # דגל סופי שאומר האם התנהגות הקוד ברמת המכונה חשודה
         }
         
@@ -221,15 +222,13 @@ class StaticAnalyzer:
     def detect_and_unpack(self):
         """
         סעיף 3: זיהוי דחיסה ופריקה (Unpacking)
-        בדיקה האם הקובץ דחוס, ואם כן - הפעלת כלי UPX לפריקה לתיקיית unpacked_software ייעודית.
+        בדיקה האם הקובץ דחוס, ואם כן - הפעלת כלי UPX ואימות לפי גודל הקובץ.
         """
         print("\n[*] Step 3: Checking for packed executable and unpacking (UPX)...")
         
-        # לקיחת הסטטוס שנקבע בסעיף 2 לגבי מצב הדחיסה של הקובץ
         is_packed = self.results.get("is_packed", False)
         
         try:
-            # וידוא נוסף על ידי חיפוש פיזי של מחרוזת UPX בשמות הסקשנים
             pe = pefile.PE(self.file_path)
             for section in pe.sections:
                 sec_name = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
@@ -246,39 +245,39 @@ class StaticAnalyzer:
             print("[!] Packed file detected! Attempting to unpack using UPX...")
             
             output_dir = "unpacked_software"
-            
-            
-            # בידוד שם הקובץ בלבד מתוך הנתיב המלא שלו (למשל הפיכת "C:/path/file.exe" ל-"file.exe")
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                
             file_name = os.path.basename(self.file_path)
-            
-            # בניית השם החדש עבור הקובץ הפרוק
             if ".exe" in file_name.lower():
                 unpacked_file_name = file_name.replace(".exe", "_unpacked.exe")
             else:
                 unpacked_file_name = file_name + "_unpacked.exe"
             
-            # יצירת הנתיב הסופי המלא שיוביל אל תוך תיקיית unpacked_software
             unpacked_path = os.path.join(output_dir, unpacked_file_name)
             original_file_path = self.file_path
             
-            # הרצת כלי ה-UPX דרך מערכת ההפעלה ושמירת הקובץ החדש בתיקייה הייעודית
             process = subprocess.run(
                 ['upx', '-d', original_file_path, '-o', unpacked_path], 
                 capture_output=True, text=True
             ) 
 
-            # בדיקה אם הפריקה עברה בהצלחה והקובץ החדש אכן נוצר פיזית בתיקייה
             if process.returncode == 0 and os.path.exists(unpacked_path):
-                print(f"[+] Unpacked successfully to: {unpacked_path}")
+                # --- התוספת מספר הפרויקט: וידוא שהקובץ גדל משמעותית ---
+                original_size = os.path.getsize(original_file_path)
+                unpacked_size = os.path.getsize(unpacked_path)
                 
-                # --- קריטי! ---
-                # שינוי משתנה ה-file_path של המחלקה לנתיב של הקובץ החדש בתוך unpacked_software
-                # מעכשיו, כל הסעיפים הבאים (חתימות, מחרוזות, אסמבלי) יסרקו את הקובץ הפרוק הזה
-                self.file_path = unpacked_path
-                self.results["unpacked_successful"] = True
-                return True
+                if unpacked_size > original_size:
+                    print(f"[+] Unpacked successfully to: {unpacked_path}")
+                    print(f"    -> Size increased from {original_size} to {unpacked_size} bytes.")
+                    self.file_path = unpacked_path
+                    self.results["unpacked_successful"] = True
+                    return True
+                else:
+                    print("[-] Unpacking finished, but file size did not increase. Might not be a valid unpack.")
+                    self.results["unpacked_successful"] = False
+                    return False
             else:
-                # זיהוי שגיאה ספציפית שבה הקובץ לא נדחס על ידי UPX
                 if "NotPackedException" in process.stderr:
                     print("[-] Failed to unpack: File is NOT packed with UPX (Likely a custom packer or PyInstaller).")
                 else:
@@ -296,7 +295,6 @@ class StaticAnalyzer:
             print(f"[-] Error during unpacking analysis: {e}")
             self.results["unpacked_successful"] = False
             return False
-        
 
     def calculate_and_check_hashes(self):
         """
@@ -545,7 +543,7 @@ class StaticAnalyzer:
     def analyze_assembly(self):
         """
         סעיף 6: הנדסה לאחור וניתוח IAT
-        שליפת פונקציות API מחשידות ופירוק הקוד לאסמבלי לאיתור טקטיקות התחמקות.
+        שליפת פונקציות API מחשידות, פירוק הקוד לאסמבלי, ומעקב אחרי שרשראות JMP/CALL.
         """
         print("\n[*] Step 6: Analyzing API Imports (IAT) and Disassembling Code...")
 
@@ -553,7 +551,6 @@ class StaticAnalyzer:
             pe = pefile.PE(self.file_path)
             
             # --- חלק א': חילוץ וניתוח Import Address Table (IAT) ---
-            # רשימה שחורה של פונקציות שמשמשות תוקפים להזרקות קוד, Keyloggers והתחמקות
             dangerous_apis = [
                 'virtualalloc', 'virtualallocex', 'writeprocessmemory', 
                 'createremotethread', 'loadlibrarya', 'getprocaddress', 
@@ -563,7 +560,6 @@ class StaticAnalyzer:
             imports_dict = {}
             found_suspicious_apis = []
             
-            # בדיקה האם לקובץ יש בכלל טבלת ייבוא
             if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
                 for entry in pe.DIRECTORY_ENTRY_IMPORT:
                     dll_name = entry.dll.decode('utf-8', errors='ignore').lower()
@@ -573,8 +569,6 @@ class StaticAnalyzer:
                         if imp.name:
                             func_name = imp.name.decode('utf-8', errors='ignore')
                             imports_dict[dll_name].append(func_name)
-                            
-                            # בדיקה אם הפונקציה נמצאת ברשימה השחורה שלנו
                             if func_name.lower() in dangerous_apis:
                                 found_suspicious_apis.append(func_name)
                                 
@@ -587,15 +581,14 @@ class StaticAnalyzer:
             else:
                 print("    [+] No highly suspicious API imports detected.")
 
-            # --- חלק ב': פירוק לאסמבלי (Capstone) ---
-            if pe.FILE_HEADER.Machine == 0x8664:  # AMD64
+            # --- חלק ב': פירוק לאסמבלי (Capstone) ומעקב זרימת קוד ---
+            if pe.FILE_HEADER.Machine == 0x8664:
                 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
-            else:  # 32 ביט
+            else:
                 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
                 
             code_section = None
             for section in pe.sections:
-                # 0x20000000 = IMAGE_SCN_MEM_EXECUTE (חיפוש מקטע הרצה)
                 if section.Characteristics & 0x20000000:
                     code_section = section
                     break
@@ -605,20 +598,21 @@ class StaticAnalyzer:
                 return False
                 
             code_data = code_section.get_data()
-            
             risk_score = 0
-            nop_count = 0
-            max_consecutive_nops = 0
-            xor_count = 0
+            
+            call_jmp_table = []
+            chained_calls_detected = 0
+            dynamic_api_resolutions = 0
+            previous_instructions = [] 
             
             heuristics_found = {
                 "rdtsc_anti_vm": False,
                 "cpuid_evasion": False,
                 "peb_direct_access": False,
-                "xor_obfuscation": False
+                "dynamic_api_loading": False,
+                "chained_execution": False
             }
             
-            # פירוק הקוד (מוגבל ל-10,000 פקודות לטובת יעילות)
             instructions = md.disasm(code_data, code_section.VirtualAddress)
             
             for i, inst in enumerate(instructions):
@@ -628,60 +622,57 @@ class StaticAnalyzer:
                 mnemonic = inst.mnemonic.lower()
                 op_str = inst.op_str.lower()
                 
-                # בדיקת NOP Sled
-                if mnemonic == 'nop':
-                    nop_count += 1
-                    if nop_count > max_consecutive_nops:
-                        max_consecutive_nops = nop_count
-                else:
-                    nop_count = 0
+                previous_instructions.append(mnemonic)
+                if len(previous_instructions) > 3:
+                    previous_instructions.pop(0)
+                
+                if mnemonic in ['call', 'jmp']:
+                    call_jmp_table.append({
+                        "address": hex(inst.address),
+                        "type": mnemonic,
+                        "target": op_str
+                    })
                     
-                # בדיקת מנגנוני זמן (RDTSC) - Anti-VM
+                    if len(previous_instructions) >= 2 and previous_instructions[-2] in ['call', 'jmp']:
+                        chained_calls_detected += 1
+                        
+                if mnemonic == 'call' and 'push' in previous_instructions:
+                    dynamic_api_resolutions += 1
+
                 if mnemonic == 'rdtsc' and not heuristics_found["rdtsc_anti_vm"]:
-                    print("    [!] Heuristic: RDTSC instruction found (Anti-Debugging/Anti-VM).")
                     risk_score += 10
                     heuristics_found["rdtsc_anti_vm"] = True
-                        
-                # בדיקת זיהוי סביבה וירטואלית (CPUID)
+                    
                 if mnemonic == 'cpuid' and not heuristics_found["cpuid_evasion"]:
-                    print("    [!] Heuristic: CPUID instruction found (VM Detection).")
                     risk_score += 10
                     heuristics_found["cpuid_evasion"] = True
-                        
-                # גישה ישירה ל-PEB
+                    
                 if ('fs:[' in op_str and '30' in op_str) or ('gs:[' in op_str and '60' in op_str):
                     if not heuristics_found["peb_direct_access"]:
-                        print("    [!] Heuristic: Direct PEB access found (Evasion technique).")
                         risk_score += 30
                         heuristics_found["peb_direct_access"] = True
-                        
-                # ספירת פעולות XOR חשודות (לא איפוס רגיל)
-                if mnemonic == 'xor':
-                    parts = op_str.split(',')
-                    if len(parts) == 2 and parts[0].strip() != parts[1].strip():
-                        xor_count += 1
 
-            # שקלול סופי של ממצאי האסמבלי
-            if max_consecutive_nops >= 15:
-                print(f"    [!] Heuristic: NOP sled detected ({max_consecutive_nops} consecutive NOPs).")
-                risk_score += 20
+            if chained_calls_detected > 10:
+                print(f"    [!] Heuristic: Detected {chained_calls_detected} chained JMP/CALL instructions.")
+                risk_score += 15
+                heuristics_found["chained_execution"] = True
                 
-            if xor_count > 50: 
-                print(f"    [!] Heuristic: High frequency of XOR operations ({xor_count}) - Possible Payload Decryption.")
+            if dynamic_api_resolutions > 5:
+                print(f"    [!] Heuristic: Detected {dynamic_api_resolutions} dynamic API loading patterns (push followed by call).")
                 risk_score += 20
-                heuristics_found["xor_obfuscation"] = True
-                
+                heuristics_found["dynamic_api_loading"] = True
+
             print(f"[*] Assembly Risk Score: {risk_score}")
             
             self.results["assembly_risk_score"] = risk_score
             self.results["assembly_heuristics"] = heuristics_found
+            self.results["call_jmp_table"] = call_jmp_table 
             
-            # אם הציון גבוה (או שמצאנו המון פונקציות מחשידות ב-IAT), נסמן את הקוד כחשוד
-            if risk_score >= 40 or len(found_suspicious_apis) > 3:
-                print("[!] Alert: Code is considered HIGHLY SUSPICIOUS based on Assembly/IAT behavior.")
+            if risk_score >= 30 or len(found_suspicious_apis) > 3:
+                print("[!] Alert: Code is considered HIGHLY SUSPICIOUS based on Assembly flow and IAT.")
                 self.results["is_assembly_suspicious"] = True
             else:
-                print("[+] Assembly and IAT look behaviorally normal.")
+                print("[+] Assembly flow and IAT look behaviorally normal.")
                 self.results["is_assembly_suspicious"] = False
                 
             return True

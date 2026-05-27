@@ -4,7 +4,6 @@ import os
 
 load_dotenv()
 
-
 class DatabaseManager:
     def __init__(self):
         self.config = {

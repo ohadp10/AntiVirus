@@ -44,23 +44,25 @@ class AdvancedSandboxAgent:
 
             while self.running:
                 try:
-                    # בדיקת תהליכים חדשים (עץ תהליכים)
+                    # 1. ניטור תהליכים
                     try:
                         proc_event = proc_watcher.NextEvent(1000)
                         proc = proc_event.TargetInstance
-                        self.process_events.append(
-                            f"[{time.strftime('%H:%M:%S')}] PROCESS CREATED: {proc.Name} (PID: {proc.ProcessId}) -> Parent PID: {proc.ParentProcessId}"
-                        )
+                        self.process_events.append(f"[{time.strftime('%H:%M:%S')}] PROCESS: {proc.Name} (PID: {proc.ProcessId})")
                     except: pass
 
-                    # בדיקת שינויי קבצים (CreateFile / WriteFile)
+                    # 2. ניטור רג'יסטרי (החלק שהיה חסר)
+                    try:
+                        reg_event = reg_watcher.NextEvent(1000)
+                        self.registry_events.append(f"[{time.strftime('%H:%M:%S')}] REGISTRY MODIFIED in run keys")
+                    except: pass
+
+                    # 3. ניטור קבצים
                     try:
                         file_event = file_watcher.NextEvent(1000)
                         f_file = file_event.TargetInstance
                         if "Sandbox" in f_file.Path:
-                            self.file_events.append(
-                                f"[{time.strftime('%H:%M:%S')}] FILE EVENT: {f_file.Drive}{f_file.Path}{f_file.FileName}.{f_file.Extension}"
-                            )
+                            self.file_events.append(f"[{time.strftime('%H:%M:%S')}] FILE EVENT: {f_file.Name}")
                     except: pass
                 except Exception as e:
                     print(f"Monitor error: {e}")
@@ -180,6 +182,7 @@ class AdvancedSandboxAgent:
             report.append("[+] No network indicators or connection attempts captured.")
 
         with open(self.report_path, "w", encoding="utf-8") as f:
+            print(f"[*] AGENT DEBUG: Attempting to write report to {self.report_path}")
             for line in report:
                 f.write(line + "\n")
         print(f"[+] Analysis successfully completed. Report saved at: {self.report_path}")
@@ -197,7 +200,16 @@ class AdvancedSandboxAgent:
         # 3. כיבוי מאזינים
         self.running = False
         if tshark_proc:
-            tshark_proc.wait(timeout=5)
+            try:
+                # נותנים לו צ'אנס לסיים את כתיבת ה-PCAP ברוגע
+                tshark_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # אם הוא מתעכב אפילו במאית שנייה, אנחנו חותכים אותו כדי לא לרסק את הדו"ח
+                tshark_proc.terminate()
+                tshark_proc.wait()
+                
+        # --- תוספת קריטית: תן זמן ל-WMI לסיים לכתוב את הרשימות לפני שסוגרים ---
+        time.sleep(2) 
             
         # 4. ניתוח קבצי הפלט והפקת דוח
         self.parse_pcap_protocols()
@@ -209,5 +221,7 @@ if __name__ == "__main__":
         sys.exit(1)
         
     target = sys.argv[1]
+    
+    # יצירת המופע והפעלת צינור הניתוח
     agent = AdvancedSandboxAgent(target)
     agent.execute_pipeline()

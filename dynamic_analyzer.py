@@ -10,6 +10,10 @@ load_dotenv()
 class DynamicAnalyzer:
     def __init__(self, file_path):
         self.file_path = file_path
+        # בתוך פונקציית ה-__init__ הוסף את משיכת ה-AMI
+        self.clean_ami_id = os.getenv("CLEAN_AMI_ID")
+        if not self.clean_ami_id:
+            raise ValueError("[-] Missing CLEAN_AMI_ID in .env file!")
         
         # משיכת הנתונים בצורה מאובטחת
         self.aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
@@ -98,6 +102,16 @@ class DynamicAnalyzer:
             
             print(f"[*] Agent finished with exit status: {exit_status}")
             print("[*] Downloading analysis report from Cloud...")
+
+            # --- תוספת לדיבאג: קריאת פלט מהענן ---
+            agent_output = stdout.read().decode('utf-8', errors='ignore').strip()
+            agent_errors = stderr.read().decode('utf-8', errors='ignore').strip()
+            
+            if agent_output:
+                print(f"[*] Agent Console Output:\n{agent_output}")
+            if agent_errors:
+                print(f"[!] Agent Console ERRORS:\n{agent_errors}")
+            # ----------------------------------------
             
             try:
                 sftp.get(remote_report_path, "cloud_report_temp.txt")
@@ -113,17 +127,50 @@ class DynamicAnalyzer:
         except Exception as e:
             print(f"[!] Cloud analysis error: {e}")
         finally:
-            ssh.close()
+            if 'ssh' in locals():
+                ssh.close()
             # קריטי: מכבים את המכונה תמיד, גם אם הקוד קרס, כדי למנוע חיובים מיותרים ב-AWS
-            self.stop_sandbox_instance()
+            self.rollback_to_clean_state()
             
         return logs
-
-# בלוק בדיקה
-if __name__ == "__main__":
-    tester = DynamicAnalyzer(r"C:\Users\user\Desktop\MalwareDetection\dist\dummy_virus.exe") 
-    results = tester.run_analysis()
     
-    print("\n--- CLOUD ANALYSIS RESULTS ---")
-    for r in results:
-        print(r)
+    def rollback_to_clean_state(self):
+        """
+        מחליף את הכונן הקשיח (Root Volume) של המכונה הווירטואלית 
+        לגרסה נקייה מתוך תמונת ה-AMI, מה שמוחק לחלוטין את הוירוס שרץ עליה.
+        """
+        print("\n[*] Cloud: Initiating Rollback to clean state...")
+        
+        
+        # 2. פקודת ההחלפה של הכונן מול ה-API של אמזון
+        try:
+            print("[*] AWS API: Replacing infected Root Volume with clean AMI...")
+            response = self.ec2.create_replace_root_volume_task(
+                InstanceId=self.instance_id,
+                ImageId=self.clean_ami_id
+            )
+            
+            task_id = response['ReplaceRootVolumeTask']['ReplaceRootVolumeTaskId']
+            
+            # 3. המתנה לסיום התהליך (יכול לקחת דקה-שתיים בענן)
+            print(f"[*] Task created ({task_id}). Waiting for volume replacement to complete...")
+            while True:
+                task_status = self.ec2.describe_replace_root_volume_tasks(
+                    ReplaceRootVolumeTaskIds=[task_id]
+                )
+                state = task_status['ReplaceRootVolumeTasks'][0]['TaskState']
+                
+                if state == 'succeeded':
+                    print("[+] Cloud: Rollback successful! Sandbox is clean and ready for the next scan.")
+                    break
+                elif state in ['failed', 'failed-detached']:
+                    print("[-] Cloud: Rollback failed!")
+                    break
+                    
+                time.sleep(10) # דוגמים כל 10 שניות כדי לא להעמיס על ה-API
+                
+        except Exception as e:
+            print(f"[-] Error during Rollback: {e}")
+
+        finally:
+            self.stop_sandbox_instance()
