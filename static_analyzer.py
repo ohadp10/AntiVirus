@@ -65,7 +65,7 @@ class StaticAnalyzer:
             else:
                 print("[-] Failed: The Magic Number does not match a valid PE file.")
                 self.results["is_valid_pe"] = False
-                return # יציאה מוקדמת, אין טעם להמשיך לנתח קובץ שהוא לא PE
+                return True# יציאה מוקדמת, אין טעם להמשיך לנתח קובץ שהוא לא PE
 
             # --- 2. בדיקת TimeDateStamp (זיהוי תאריכי קימפול מזויפים) ---
             timestamp = pe.FILE_HEADER.TimeDateStamp
@@ -334,6 +334,10 @@ class StaticAnalyzer:
                     print("[!] Alert: File hash found in local DB and marked as Malicious!")
                     self.results["is_hash_malicious"] = "malicious"
                     return True # חוסכים זמן, סיימנו את הניתוח
+                elif status == "suspicious":
+                    print("[!] Alert: File hash found in local DB and marked as Suspicious!")
+                    self.results["is_hash_malicious"] = "suspicious"
+                    return True
                 elif db_verdict == 'safe':
                     print("[+] Database: File hash is known and marked as Safe.")
                     self.results["is_hash_malicious"] = "safe"
@@ -408,7 +412,6 @@ class StaticAnalyzer:
                 except:
                     pass
                     
-        return True
     
 
     def _decode_base64_xor(self, content_bytes):
@@ -691,8 +694,10 @@ class StaticAnalyzer:
         print("="*45 + "\n")
         
         # 1. PE verification
-        self.verify_pe()
-
+        if self.verify_pe():
+            print("Scan has ended. File is not PE file!")
+            return True
+    
         # 2. Analyze sections
         self.analyze_sections()
 
@@ -700,7 +705,9 @@ class StaticAnalyzer:
         self.detect_and_unpack()
 
         # 4. Calculate Hash
-        self.calculate_and_check_hashes()
+        if self.calculate_and_check_hashes():
+            print("Scan has ended. Hash was found Malicious or suspicious or Safe!")
+            return True
 
         # 5. Extract Ips and Urls
         self.extract_and_check_network_iocs()

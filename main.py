@@ -26,11 +26,38 @@ def main():
     dynamic_analyzer = DynamicAnalyzer(target_file_path)
 
     
-    static_analyzer.begin_analyzing()
-    cloud_logs = dynamic_analyzer.run_analysis()
+    if static_analyzer.begin_analyzing() != True:
+        cloud_logs = dynamic_analyzer.run_analysis()
 
-    engine = HeuristicRuleEngine(static_analyzer.results, cloud_logs)
-    final_report = engine.calculate_threat_score()
+        engine = HeuristicRuleEngine(static_analyzer.results, cloud_logs)
+        final_report = engine.calculate_threat_score()
+
+    file_hash = static_analyzer.results.get("file_hash", "")
+    section_hashes = static_analyzer.results.get("section_hashes", {})
+    network_iocs = static_analyzer.results.get("network_iocs", {})
+    verdict = final_report["final_verdict"]
+
+    # 1. שמירת דו"ח הסריקה המלא לתיעוד (Audit)
+    db_manager.save_scan_report(
+        file_name=os.path.basename(target_file_path),
+        file_hash=static_analyzer.results["file_hash"],
+        threat_score=final_report["threat_score"],
+        final_verdict=final_report["final_verdict"],
+        insights=final_report["insights"],
+        dynamic_logs=cloud_logs
+    )
+
+    # 2. הוספת החתימה הראשית למאגר (Auto-Learning)
+    if file_hash:
+        db_manager.add_to_known_hashes(file_hash, verdict)
+        
+    # 3. הוספת חתימות המקטעים למאגר (Verdict Inheritance)
+    if section_hashes:
+        db_manager.learn_section_hashes(section_hashes, verdict)
+        
+    # 4. הוספת אינדיקטורים של רשת (IOCs) למאגר
+    if network_iocs:
+        db_manager.learn_network_iocs(network_iocs)
 
     print("="*45)
     print("--- FINAL VERDICT & THREAT SCORE ---")

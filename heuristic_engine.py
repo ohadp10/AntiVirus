@@ -11,9 +11,10 @@ class HeuristicRuleEngine:
             "custom_packer": 15,
             "suspicious_api_import": 10,  # לכל פונקציה מסוכנת (מקסימום 30)
             "assembly_anti_vm": 20,
-            "assembly_dynamic_chains": 20, # הוספנו: שרשראות קפיצה וטעינה דינמית
+            "assembly_dynamic_chains": 20,
             "dynamic_process_creation": 15,
-            "dynamic_code_injection": 40,  # הוספנו: לפי סעיף 10.2 בספר הפרויקט
+            "dynamic_registry_persistence": 25, # <--- הוספנו: ניטור שרידות ברג'יסטרי
+            "dynamic_code_injection": 40,  # לפי סעיף 10.2 בספר הפרויקט
             "dynamic_sensitive_file_drop": 20,
             "dynamic_ransomware_note": 15,
             "dynamic_system32_touch": 25,
@@ -52,18 +53,15 @@ class HeuristicRuleEngine:
             self.insights.append(f"[STATIC] Found highly suspicious API imports: {', '.join(suspicious_imports)} (+{score_to_add}).")
 
         # 4. התחמקות ברמת האסמבלי (Anti-VM / Obfuscation)
-        asm_score = self.static_results.get("assembly_risk_score", 0)
         asm_heuristics = self.static_results.get("assembly_heuristics", {})
-        
         if asm_heuristics.get("rdtsc_anti_vm") or asm_heuristics.get("cpuid_evasion") or asm_heuristics.get("peb_direct_access"):
             self.threat_score += self.weights["assembly_anti_vm"]
             self.insights.append("[STATIC] Assembly heuristics indicate Anti-VM or Evasion techniques (+20).")
             
-        # 5. זיהוי טעינה דינמית ושרשראות קריאה (התוספת החדשה שלנו!)
+        # 5. זיהוי טעינה דינמית ושרשראות קריאה
         if asm_heuristics.get("dynamic_api_loading") or asm_heuristics.get("chained_execution"):
             self.threat_score += self.weights["assembly_dynamic_chains"]
             self.insights.append("[STATIC] Assembly flow shows chained execution or dynamic API loading (+20).")
-
 
     def _evaluate_dynamic_data(self):
         """שקלול הממצאים מהניתוח הדינמי בענן (ETW, Tshark)"""
@@ -78,7 +76,12 @@ class HeuristicRuleEngine:
                 self.threat_score += self.weights["dynamic_process_creation"]
                 self.insights.append(f"[DYNAMIC] Malware spawned a suspicious shell process (+15).")
                 
-            # 2. הזרקות קבצים זדוניים או פגיעה בקבצי מערכת (כולל הרחבת Ransomware)
+            # 2. שינויי רג'יסטרי (שרידות / Persistence) - התוספת החדשה
+            if "REGISTRY MODIFIED" in log:
+                self.threat_score += self.weights["dynamic_registry_persistence"]
+                self.insights.append(f"[DYNAMIC] Malware modified Registry Run Keys for persistence (+25).")
+                
+            # 3. הזרקות קבצים זדוניים או פגיעה בקבצי מערכת
             if "FILE CREATED" in log or "FILE MODIFIED" in log:
                 if any(ext in log.lower() for ext in [".exe", ".bat", ".dll", ".ps1"]):
                     self.threat_score += self.weights["dynamic_sensitive_file_drop"]
@@ -90,12 +93,12 @@ class HeuristicRuleEngine:
                     self.threat_score += self.weights["dynamic_ransomware_note"]
                     self.insights.append(f"[DYNAMIC] Suspicious text file created/modified (Potential Ransomware Note) (+15).")
 
-            # 3. הזרקות קוד לזיכרון (החוק מהספר!)
+            # 4. הזרקות קוד לזיכרון
             if "virtualallocex" in log.lower() or "writeprocessmemory" in log.lower() or "code injection" in log.lower():
                 self.threat_score += self.weights["dynamic_code_injection"]
                 self.insights.append(f"[DYNAMIC] Critical: Process memory injection or RWX allocation detected (+40).")
 
-            # 4. בקשות רשת ודליפת מידע
+            # 5. בקשות רשת ודליפת מידע
             if "HTTP REQUEST" in log or "DNS QUERY" in log:
                 self.threat_score += self.weights["dynamic_network_c2"]
                 self.insights.append(f"[DYNAMIC] Network connection established (Potential C2 Beaconing) (+25).")
@@ -117,7 +120,7 @@ class HeuristicRuleEngine:
         if self.threat_score > 100:
             self.threat_score = 100
             
-        # סיווג סופי לפי Thresholds שדיברנו עליהם (0-39, 40-74, 75-100)
+        # סיווג סופי לפי Thresholds (0-39, 40-74, 75-100)
         if self.threat_score < 40:
             final_verdict = "SAFE"
         elif 40 <= self.threat_score <= 74:
