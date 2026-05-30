@@ -85,8 +85,7 @@ class AdvancedSandboxAgent:
             script_code = """
             Interceptor.attach(Module.findExportByName('kernel32.dll', 'VirtualAlloc'), {
                 onEnter: function (args) {
-                    send({ api: 'VirtualAlloc', details: 'Allocated ' + args[1].toInt32() + ' bytes (Potential Code Injection/Unpacking)' });
-                }
+                send({ api: 'VirtualAlloc', details: 'Allocated ' + args[1].toInt32() + ' bytes' });                }
             });
             Interceptor.attach(Module.findExportByName('kernel32.dll', 'CreateFileW'), {
                 onEnter: function (args) {

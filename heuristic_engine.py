@@ -116,6 +116,13 @@ class HeuristicRuleEngine:
         self._evaluate_static_data()
         self._evaluate_dynamic_data()
         
+        # --- מנגנון Whitelist לסינון False Positives ---
+        # אם ה-Hash מוכר כבטוח, אנחנו מרסקים את הציון כדי שתוכנות כמו Notepad יעברו בהצלחה
+        if self.static_results.get("is_hash_malicious") == "safe":
+            print("[*] Heuristic Engine: File verified as SAFE by reputation. Applying Whitelist reduction.")
+            self.insights.append("[WHITELIST] Known safe software signature detected. Threat score strictly reduced.")
+            self.threat_score = min(self.threat_score, 30)
+
         # חסימת הציון ל-100 כדי שלא יחרוג מהסקאלה
         if self.threat_score > 100:
             self.threat_score = 100

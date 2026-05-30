@@ -176,7 +176,9 @@ class StaticAnalyzer:
                 # --- 2. בדיקת יחסי גדלים בזיכרון מול הדיסק ---
                 # אם המקטע תופס הרבה יותר מקום בזיכרון מאשר על הדיסק (למשל פי 2)
                 # זה סימן מובהק ל- Unpacking בזמן ריצה
-                suspicious_size = virtual_size > (raw_size * 2) and raw_size > 0
+                # מחריגים סקשנים של נתונים שבהם זה נורמלי שמוקצה זיכרון ריק מראש
+                is_data_section = sec_name.lower() in ['.data', '.bss', '.rdata']
+                suspicious_size = virtual_size > (raw_size * 2) and raw_size > 0 and not is_data_section
                 
                 # --- 3. בדיקת שמות מחשידים ---
                 is_upx = "UPX" in sec_name.upper()
@@ -333,7 +335,7 @@ class StaticAnalyzer:
                     print("[!] Alert: File hash found in local DB and marked as Malicious!")
                     self.results["is_hash_malicious"] = "malicious"
                     return True # חוסכים זמן, סיימנו את הניתוח
-                elif status == "suspicious":
+                elif db_sec_verdict == "suspicious":
                     print("[!] Alert: File hash found in local DB and marked as Suspicious!")
                     self.results["is_hash_malicious"] = "suspicious"
                     return True
@@ -485,8 +487,13 @@ class StaticAnalyzer:
             for ip_bytes in extracted_ips:
                 ip_str = ip_bytes.decode('utf-8', errors='ignore')
                 parts = ip_str.split('.')
-                # סינון כתובות לא חוקיות וכתובות מקומיות רגילות שאינן מחשידות לרוב
+                
+                # סינון כתובות לא חוקיות וכתובות מקומיות רגילות
                 if all(0 <= int(p) <= 255 for p in parts) and not ip_str.startswith("0.") and not ip_str.startswith("127."):
+                    # התוספת שלנו: סינון מספרי גרסאות של ווינדוס (לרוב נגמרים ב-.0.0)
+                    if ip_str.endswith(".0.0"):
+                        continue
+                    
                     self._evaluate_ioc(ip_str, 'ip')
                     
             # עיבוד כתובות URL
@@ -654,12 +661,12 @@ class StaticAnalyzer:
                         risk_score += 30
                         heuristics_found["peb_direct_access"] = True
 
-            if chained_calls_detected > 10:
+            if chained_calls_detected > 30:
                 print(f"    [!] Heuristic: Detected {chained_calls_detected} chained JMP/CALL instructions.")
                 risk_score += 15
                 heuristics_found["chained_execution"] = True
                 
-            if dynamic_api_resolutions > 5:
+            if dynamic_api_resolutions > 15:
                 print(f"    [!] Heuristic: Detected {dynamic_api_resolutions} dynamic API loading patterns (push followed by call).")
                 risk_score += 20
                 heuristics_found["dynamic_api_loading"] = True
