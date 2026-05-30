@@ -50,8 +50,7 @@ class StaticAnalyzer:
         
     def verify_pe(self):
         """
-        סעיף 1: בדיקת כותרות ומבנה הקובץ (PE Headers Parsing)
-        בדיקת תקינות הקובץ, מניפולציות על כותרות (תאריך וגודל), ומיפוי נקודת הכניסה.
+        Checks PE Dos Header for Magic Number
         """
         print("[*] Step 1: Verifying PE Header and Entry Point...")
         try:
@@ -694,9 +693,10 @@ class StaticAnalyzer:
         print("="*45 + "\n")
         
         # 1. PE verification
-        if self.verify_pe():
-            print("Scan has ended. File is not PE file!")
-            return True
+        self.verify_pe()
+        if not self.results.get("is_valid_pe"):
+            print("[-] CRITICAL: File is not a valid PE. Stopping analysis.")
+            return "INVALID_PE"
     
         # 2. Analyze sections
         self.analyze_sections()
@@ -705,14 +705,17 @@ class StaticAnalyzer:
         self.detect_and_unpack()
 
         # 4. Calculate Hash
-        if self.calculate_and_check_hashes():
-            print("Scan has ended. Hash was found Malicious or suspicious or Safe!")
-            return True
+        self.calculate_and_check_hashes()
+        if self.results.get("is_hash_malicious") == "malicious":
+            print("[!] CRITICAL: Full file hash is known as MALICIOUS. Stopping analysis.")
+            return "KNOWN_MALICIOUS"
 
         # 5. Extract Ips and Urls
         self.extract_and_check_network_iocs()
 
         # 6. Assembly Analyze
         self.analyze_assembly()
+        
+        return "CONTINUE"
   
         

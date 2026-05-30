@@ -3,8 +3,28 @@ import os
 import time
 import subprocess
 import threading
-import pythoncom
-import win32com.client
+import json
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import frida
+
+# --- מחלקה לניטור קבצים (FileSystemWatcher) ---
+class SandboxFileMonitor(FileSystemEventHandler):
+    def __init__(self, event_list):
+        self.event_list = event_list
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self.event_list.append(f"[{time.strftime('%H:%M:%S')}] FILE CREATED: {event.src_path}")
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self.event_list.append(f"[{time.strftime('%H:%M:%S')}] FILE MODIFIED: {event.src_path}")
+
+    def on_deleted(self, event):
+        if not event.is_directory:
+            self.event_list.append(f"[{time.strftime('%H:%M:%S')}] FILE DELETED: {event.src_path}")
+
 
 class AdvancedSandboxAgent:
     def __init__(self, malware_path):
@@ -13,74 +33,42 @@ class AdvancedSandboxAgent:
         self.pcap_path = os.path.join(self.watch_dir, "network_capture.pcap")
         self.report_path = os.path.join(self.watch_dir, "analysis_report.txt")
         
-        # מאגרי נתונים לרישום ממצאים בזמן אמת
+        # הגדרות עבור ETW
+        self.etw_trace_name = "MalwareETWTrace"
+        self.etw_output_file = os.path.join(self.watch_dir, "trace.etl")
+        
+        # מבני נתונים חדשים ומעודכנים (כולל עץ תהליכים)
         self.file_events = []
-        self.process_events = []
-        self.registry_events = []
+        self.api_hooks_events = []
         self.network_events = []
+        self.process_tree = {}  # Abstract Tree: Parent_PID -> [Child_PIDs]
         self.running = True
 
-    def start_kernel_monitoring(self):
-        """
-        מממש את דרישת הניטור ברמת הליבה (Kernel/ETW Layer)
-        האזנה ליצירת תהליכים, קבצים ושינויי רג'יסטרי.
-        """
-        def wmi_monitors_thread():
-            pythoncom.CoInitialize()
-            wmi = win32com.client.GetObject("winmgmts:")
-            
-            # 1. ניטור יצירת תהליכים (Process Creation)
-            proc_watcher = wmi.ExecNotificationQuery(
-                "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'"
-            )
-            
-            # 2. ניטור שינויי רג'יסטרי בנתיבי שרידות (Run Keys) - תוקן והושלם
-            reg_watcher = wmi.ExecNotificationQuery(
-                "SELECT * FROM RegistryKeyChangeEvent WITHIN 1 WHERE Hive='HKEY_LOCAL_MACHINE' AND KeyPath='SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run'"
-            )
-            
-            # 3. ניטור פעולות קבצים נמוכות
-            file_watcher = wmi.ExecNotificationQuery(
-                "SELECT * FROM __InstanceCreationEvent WITHIN 2 WHERE TargetInstance ISA 'CIM_DataFile' AND TargetInstance.Drive='C:'"
-            )
+    def start_filesystem_watcher(self):
+        """ מפעיל את ה-FileSystemWatcher באמצעות Watchdog """
+        event_handler = SandboxFileMonitor(self.file_events)
+        self.observer = Observer()
+        self.observer.schedule(event_handler, self.watch_dir, recursive=True)
+        self.observer.start()
+        print("[+] FileSystemWatcher initialized.")
 
-            while self.running:
-                try:
-                    # בדיקת תהליכים
-                    try:
-                        proc_event = proc_watcher.NextEvent(1000)
-                        proc = proc_event.TargetInstance
-                        self.process_events.append(
-                            f"[{time.strftime('%H:%M:%S')}] PROCESS CREATED: {proc.Name} (PID: {proc.ProcessId}) -> Parent: {proc.ParentProcessId}"
-                        )
-                    except: pass
-
-                    # בדיקת רג'יסטרי (החלק שהיה חסר)
-                    try:
-                        reg_event = reg_watcher.NextEvent(1000)
-                        self.registry_events.append(
-                            f"[{time.strftime('%H:%M:%S')}] REGISTRY MODIFIED: Persistence mechanisms (Run Key) altered!"
-                        )
-                    except: pass
-
-                    # בדיקת קבצים
-                    try:
-                        file_event = file_watcher.NextEvent(1000)
-                        f_file = file_event.TargetInstance
-                        if "Sandbox" in f_file.Path:
-                            self.file_events.append(
-                                f"[{time.strftime('%H:%M:%S')}] FILE CREATED/MODIFIED: {f_file.Name}"
-                            )
-                    except: pass
-                except Exception as e:
-                    pass # השתקת שגיאות WMI כדי לא לעצור את סריקת הרשת והתהליכים
-                    
-            pythoncom.CoUninitialize()
-
-        threading.Thread(target=wmi_monitors_thread, daemon=True).start()
-        print("[+] Kernel Event Monitoring System initialized successfully.")
+    def start_etw_monitoring(self):
+        """ מפעיל האזנה ברמת ה-Kernel דרך מנגנון ETW האמיתי של Windows """
+        print("[*] Starting ETW Kernel Monitoring...")
+        # מוודאים שאין trace ישן שרץ
+        subprocess.run(["logman", "stop", self.etw_trace_name, "-ets"], capture_output=True)
+        
+        # מתחילים רישום של תהליכים ואירועי רשת מליבת המערכת
+        start_cmd = [
+            "logman", "start", self.etw_trace_name, "-p", 
+            "Microsoft-Windows-Kernel-Process", "0x10", "-ets", 
+            "-o", self.etw_output_file
+        ]
+        subprocess.run(start_cmd, capture_output=True)
+        print("[+] ETW Trace session active.")
 
     def run_network_capture(self):
+        """ מפעיל את הניטור הפסיבי של הרשת """
         print("[*] Launching Tshark Network Promiscuous Sniffer...")
         tshark_cmd = ["tshark", "-i", "1", "-a", "duration:15", "-w", self.pcap_path]
         try:
@@ -89,10 +77,50 @@ class AdvancedSandboxAgent:
             print("[-] Error: Tshark is not configured in the system Path.")
             return None
 
+    def setup_dll_hooking(self, pid):
+        """ מתחבר לתהליך הזדוני ומבצע DLL Hooking לפונקציות API קריטיות """
+        try:
+            session = frida.attach(pid)
+            # סקריפט JS שמוזרק לזיכרון של התהליך ותופס את הפעולות שלו
+            script_code = """
+            Interceptor.attach(Module.findExportByName('kernel32.dll', 'VirtualAlloc'), {
+                onEnter: function (args) {
+                    send({ api: 'VirtualAlloc', details: 'Allocated ' + args[1].toInt32() + ' bytes (Potential Code Injection/Unpacking)' });
+                }
+            });
+            Interceptor.attach(Module.findExportByName('kernel32.dll', 'CreateFileW'), {
+                onEnter: function (args) {
+                    send({ api: 'CreateFileW', details: 'Accessed file: ' + Memory.readUtf16String(args[0]) });
+                }
+            });
+            """
+            script = session.create_script(script_code)
+            
+            def on_message(message, data):
+                if message['type'] == 'send':
+                    payload = message['payload']
+                    self.api_hooks_events.append(f"[DLL HOOK] {payload['api']} -> {payload['details']}")
+            
+            script.on('message', on_message)
+            script.load()
+            print(f"[+] Frida DLL Hooking established successfully on PID {pid}.")
+        except Exception as e:
+            print(f"[-] Frida Hooking failed: {e}")
+
     def detonate_malware(self):
         print(f"[*] Detonating target binary: {os.path.basename(self.malware_path)}")
         try:
+            # הפעלת הנוזקה
             proc = subprocess.Popen([self.malware_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # רושמים את התהליך הראשי לעץ התהליכים
+            self.process_tree["Root"] = {"PID": proc.pid, "Children": []}
+            
+            # חיבור ה-DLL Hooking מיד לאחר ההפעלה
+            time.sleep(0.5) 
+            self.setup_dll_hooking(proc.pid)
+            
+            # נותנים לנוזקה זמן לרוץ
             time.sleep(10)
             
             if proc.poll() is None:
@@ -100,23 +128,35 @@ class AdvancedSandboxAgent:
                 print("[*] Target execution timed out and was safely terminated.")
             else:
                 print(f"[*] Target exited normally with exit code: {proc.returncode}")
+                
         except Exception as e:
             print(f"[-] Critical error during detonation: {e}")
 
+    def stop_etw_monitoring(self):
+        """ עוצר את ה-ETW וממיר את התוצאות לפורמט קריא """
+        print("[*] Stopping ETW and dumping data...")
+        subprocess.run(["logman", "stop", self.etw_trace_name, "-ets"], capture_output=True)
+        # בפרויקט אמיתי מעבירים את הקובץ xml_output לפארסר מורכב יותר
+        xml_output = os.path.join(self.watch_dir, "trace.xml")
+        subprocess.run(["tracerpt", self.etw_output_file, "-o", xml_output, "-of", "XML"], capture_output=True)
+        print("[+] ETW Trace converted to XML.")
+
     def parse_pcap_protocols(self):
-        """ מנתח פרוטוקולים - DNS, HTTP, FTP """
+        """ מנתח את חבילות הרשת, כולל חילוץ חתימות JA3 מ-TLS """
         if not os.path.exists(self.pcap_path):
             return
 
         print("[*] Processing PCAP file through Advanced Protocol Parsers...")
+        # 1. DNS
         try:
             dns_cmd = ["tshark", "-r", self.pcap_path, "-Y", "dns.flags.response == 0", "-T", "fields", "-e", "dns.qry.name"]
             res = subprocess.run(dns_cmd, capture_output=True, text=True)
             queries = set([line.strip() for line in res.stdout.split('\n') if line.strip()])
             for q in queries:
-                self.network_events.append(f"[DNS QUERY] Malware requested Domain: {q}")
+                self.network_events.append(f"[DNS QUERY] Requested Domain: {q}")
         except: pass
 
+        # 2. HTTP
         try:
             http_cmd = ["tshark", "-r", self.pcap_path, "-Y", "http.request", "-T", "fields", "-e", "http.host", "-e", "http.user_agent", "-e", "http.request.method"]
             res = subprocess.run(http_cmd, capture_output=True, text=True)
@@ -124,77 +164,64 @@ class AdvancedSandboxAgent:
                 if line.strip():
                     parts = line.split('\t')
                     host = parts[0] if len(parts) > 0 else "Unknown"
-                    ua = parts[1] if len(parts) > 1 else "Unknown"
-                    method = parts[2] if len(parts) > 2 else "Unknown"
-                    self.network_events.append(f"[HTTP REQUEST] Method: {method} | Host: {host} | User-Agent: {ua}")
+                    self.network_events.append(f"[HTTP REQUEST] Host: {host}")
         except: pass
 
+        # 3. חישוב חתימות JA3 (תקשורת מוצפנת)
         try:
-            ftp_cmd = ["tshark", "-r", self.pcap_path, "-Y", "ftp", "-T", "fields", "-e", "ftp.request.command", "-e", "ftp.request.arg"]
-            res = subprocess.run(ftp_cmd, capture_output=True, text=True)
-            for line in res.stdout.split('\n'):
-                if line.strip():
-                    parts = line.split('\t')
-                    cmd = parts[0].strip() if len(parts) > 0 else ""
-                    arg = parts[1].strip() if len(parts) > 1 else ""
-                    if cmd in ["USER", "PASS"]:
-                        self.network_events.append(f"[FTP CREDENTIALS] Leaked {cmd}: {arg}")
+            ja3_cmd = ["tshark", "-r", self.pcap_path, "-Y", "tls.handshake.type == 1", "-T", "fields", "-e", "tls.handshake.ja3"]
+            res = subprocess.run(ja3_cmd, capture_output=True, text=True)
+            ja3_hashes = set([line.strip() for line in res.stdout.split('\n') if line.strip()])
+            for h in ja3_hashes:
+                self.network_events.append(f"[TLS/JA3 SIGNATURE] Encrypted traffic signature: {h}")
         except: pass
 
     def compile_final_report(self):
         print("[*] Compiling technical report...")
         report = []
-        report.append("="*60)
-        report.append("       ADVANCED MALWARE ANALYSIS REPORT - CYBER SANDBOX")
-        report.append("="*60)
         report.append(f"[*] Target File: {self.malware_path}")
         report.append(f"[*] Analysis Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-        report.append("--- KERNEL PROCESS LOGS (PROCESS TREE) ---")
-        if self.process_events:
-            report.extend(self.process_events)
-        else:
-            report.append("[+] No suspicious child processes or injections detected.")
+        report.append("--- PROCESS TREE & ETW LOGS ---")
+        report.append(json.dumps(self.process_tree, indent=4))
 
-        report.append("\n--- REGISTRY MODIFICATIONS (PERSISTENCE) ---")
-        if self.registry_events:
-            report.extend(self.registry_events)
+        report.append("\n--- API MONITORING (DLL HOOKING) ---")
+        if self.api_hooks_events:
+            report.extend(self.api_hooks_events)
         else:
-            report.append("[+] No ASEP/Run Key modifications detected.")
+            report.append("[+] No hooked API calls intercepted.")
 
-        report.append("\n--- OS FILE SYSTEM LOGS ---")
+        report.append("\n--- OS FILE SYSTEM LOGS (WATCHDOG) ---")
         if self.file_events:
-            # תוקן: הסרת כפילויות רצופות תוך שמירה על כרונולוגיה מלאה (במקום set שהורס סדר)
-            cleaned_files = []
-            for item in self.file_events:
-                if not cleaned_files or item != cleaned_files[-1]:
-                    cleaned_files.append(item)
-            report.extend(cleaned_files)
+            report.extend(list(dict.fromkeys(self.file_events))) # הסרת כפילויות תוך שמירה על סדר
         else:
             report.append("[+] No anomalous file creation or data modification detected.")
 
-        report.append("\n--- NETWORK PROTOCOL ANALYSIS ---")
+        report.append("\n--- NETWORK PROTOCOL ANALYSIS & JA3 ---")
         if self.network_events:
             report.extend(self.network_events)
         else:
             report.append("[+] No network indicators or connection attempts captured.")
 
         with open(self.report_path, "w", encoding="utf-8") as f:
-            print(f"[*] AGENT DEBUG: Attempting to write report to {self.report_path}")
             for line in report:
                 f.write(line + "\n")
         print(f"[+] Analysis successfully completed. Report saved at: {self.report_path}")
 
     def execute_pipeline(self):
-        self.start_kernel_monitoring()
+        self.start_filesystem_watcher()
+        self.start_etw_monitoring()
         tshark_proc = self.run_network_capture()
         
         time.sleep(2) 
         self.detonate_malware()
         
         self.running = False
+        self.observer.stop()
+        self.observer.join()
         
-        # תוקן: הגנה מפני קריסות של tshark
+        self.stop_etw_monitoring()
+        
         if tshark_proc:
             try:
                 tshark_proc.wait(timeout=5)

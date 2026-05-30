@@ -302,3 +302,31 @@ class DatabaseManager:
             
         finally:
             self.close_connection()
+
+    def get_recent_scans(self, limit=50):
+        """
+        שולף את היסטוריית הסריקות האחרונות מטבלת scan_history עבור מסך ה-Dashboard.
+        """
+        self.open_connection()
+        if not self.connection or not self.connection.open:
+            print("[-] Database: Cannot execute query without an active connection.")
+            return []
+            
+        try:
+            # שולפים את העמודות הרלוונטיות לתצוגה, מסודרות מהסריקה האחרונה לישנה ביותר
+            query = """
+                SELECT file_name, file_hash, scan_date, threat_score, final_verdict 
+                FROM scan_history 
+                ORDER BY scan_date DESC 
+                LIMIT %s
+            """
+            self.cursor.execute(query, (limit,))
+            results = self.cursor.fetchall()
+            return results
+            
+        except pymysql.MySQLError as err:
+            print(f"[-] Database Fetch Error (Recent Scans): {err}")
+            return []
+            
+        finally:
+            self.close_connection()

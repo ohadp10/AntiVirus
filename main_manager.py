@@ -26,11 +26,13 @@ def main():
     dynamic_analyzer = DynamicAnalyzer(target_file_path)
 
     
-    if static_analyzer.begin_analyzing() != True:
-        cloud_logs = dynamic_analyzer.run_analysis()
+    if static_analyzer.begin_analyzing() != "CONTINUE":
+        return
+    
+    cloud_logs = dynamic_analyzer.run_analysis()
 
-        engine = HeuristicRuleEngine(static_analyzer.results, cloud_logs)
-        final_report = engine.calculate_threat_score()
+    engine = HeuristicRuleEngine(static_analyzer.results, cloud_logs)
+    final_report = engine.calculate_threat_score()
 
     file_hash = static_analyzer.results.get("file_hash", "")
     section_hashes = static_analyzer.results.get("section_hashes", {})
