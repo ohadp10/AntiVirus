@@ -354,6 +354,25 @@ class FinalVerdictFrame(ctk.CTkFrame):
         else:
             self.insights_box.insert("end", "No specific anomalous behaviors detected.")
 
+        # בדיקה האם הקובץ מסוכן, ואם כן - הקפצת התראת מחיקה
+        if verdict in ["MALICIOUS", "SUSPICIOUS"]:
+            self.after(500, self.prompt_deletion)
+
+    def prompt_deletion(self):
+        target_file = self.controller.target_file_path
+        if target_file and os.path.exists(target_file):
+            response = messagebox.askyesno(
+                "Threat Detected",
+                f"The scanned file poses a threat to your system.\n\nDo you want to permanently delete it?\n\nFile: {os.path.basename(target_file)}"
+            )
+            
+            if response: # אם המשתמש בחר כן
+                try:
+                    os.remove(target_file)
+                    messagebox.showinfo("Deleted", "The malicious file has been successfully removed from your system.")
+                    self.insights_box.insert("end", "\n\n[+] ACTION TAKEN: The malicious file was deleted by the user.")
+                except Exception as e:
+                    messagebox.showerror("Deletion Failed", f"Failed to delete the file. It might be running or require administrator privileges.\n\nError: {e}")
 
 if __name__ == "__main__":
     app = MalwareDetectionApp()

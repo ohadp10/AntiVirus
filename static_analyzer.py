@@ -323,7 +323,7 @@ class StaticAnalyzer:
                     print("[!] Alert: File hash found in local DB and marked as Malicious!")
                     self.results["is_hash_malicious"] = "malicious"
                     return True # חוסכים זמן, סיימנו את הניתוח
-                elif db_sec_verdict == "suspicious":
+                elif db_verdict == "suspicious":
                     print("[!] Alert: File hash found in local DB and marked as Suspicious!")
                     self.results["is_hash_malicious"] = "suspicious"
                     return True
