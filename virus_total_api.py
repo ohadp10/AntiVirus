@@ -20,7 +20,7 @@ class VirusTotalAPI:
             with open(file_path, 'r') as file:
                 for line in file:
                     key = line.strip()
-                    if key: # מוודא שהשורה לא ריקה
+                    if key:
                         keys.append(key)
             print(f"[*] VirusTotal API: Successfully loaded {len(keys)} API keys.")
         else:
@@ -42,12 +42,10 @@ class VirusTotalAPI:
         if not self.api_keys:
             return False
             
-        # VirusTotal מאפשר 4 בקשות לדקה בחינם. נתחלף אחרי 3 ליתר ביטחון.
         if self.request_count >= 3:
             self.current_key_index += 1
             self.request_count = 0
             
-            # אם נגמרו לנו כל המפתחות, חוזרים להתחלה ועושים השהייה
             if self.current_key_index >= len(self.api_keys):
                 print("[!] VirusTotal API: All keys exhausted for this minute. Resetting to first key and waiting 60 seconds...")
                 time.sleep(60)

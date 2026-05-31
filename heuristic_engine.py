@@ -3,8 +3,7 @@ class HeuristicRuleEngine:
         self.static_results = static_results
         self.dynamic_logs = dynamic_logs
         
-        # --- מטריצת המשקולות (Weights Matrix) ---
-        # מוגדרת בדיוק לפי האפיון וספר הפרויקט.
+        # מטריצת המשקולות
         self.weights = {
             "suspicious_ep": 15,
             "high_entropy_section": 20,
@@ -13,8 +12,8 @@ class HeuristicRuleEngine:
             "assembly_anti_vm": 20,
             "assembly_dynamic_chains": 20,
             "dynamic_process_creation": 15,
-            "dynamic_registry_persistence": 25, # <--- הוספנו: ניטור שרידות ברג'יסטרי
-            "dynamic_code_injection": 40,  # לפי סעיף 10.2 בספר הפרויקט
+            "dynamic_registry_persistence": 25, # ניטור שרידות ברג'יסטרי
+            "dynamic_code_injection": 40, 
             "dynamic_sensitive_file_drop": 20,
             "dynamic_ransomware_note": 15,
             "dynamic_system32_touch": 25,
@@ -52,7 +51,7 @@ class HeuristicRuleEngine:
             self.threat_score += score_to_add
             self.insights.append(f"[STATIC] Found highly suspicious API imports: {', '.join(suspicious_imports)} (+{score_to_add}).")
 
-        # 4. התחמקות ברמת האסמבלי (Anti-VM / Obfuscation)
+        # 4. התחמקות ברמת האסמבלי
         asm_heuristics = self.static_results.get("assembly_heuristics", {})
         if asm_heuristics.get("rdtsc_anti_vm") or asm_heuristics.get("cpuid_evasion") or asm_heuristics.get("peb_direct_access"):
             self.threat_score += self.weights["assembly_anti_vm"]
@@ -76,7 +75,7 @@ class HeuristicRuleEngine:
                 self.threat_score += self.weights["dynamic_process_creation"]
                 self.insights.append(f"[DYNAMIC] Malware spawned a suspicious shell process (+15).")
                 
-            # 2. שינויי רג'יסטרי (שרידות / Persistence) - התוספת החדשה
+            # 2. שינויי רג'יסטרי 
             if "REGISTRY MODIFIED" in log:
                 self.threat_score += self.weights["dynamic_registry_persistence"]
                 self.insights.append(f"[DYNAMIC] Malware modified Registry Run Keys for persistence (+25).")
@@ -116,8 +115,6 @@ class HeuristicRuleEngine:
         self._evaluate_static_data()
         self._evaluate_dynamic_data()
         
-        # --- מנגנון Whitelist לסינון False Positives ---
-        # אם ה-Hash מוכר כבטוח, אנחנו מרסקים את הציון כדי שתוכנות כמו Notepad יעברו בהצלחה
         if self.static_results.get("is_hash_malicious") == "safe":
             print("[*] Heuristic Engine: File verified as SAFE by reputation. Applying Whitelist reduction.")
             self.insights.append("[WHITELIST] Known safe software signature detected. Threat score strictly reduced.")
@@ -127,7 +124,6 @@ class HeuristicRuleEngine:
         if self.threat_score > 100:
             self.threat_score = 100
             
-        # סיווג סופי לפי Thresholds (0-39, 40-74, 75-100)
         if self.threat_score < 40:
             final_verdict = "SAFE"
         elif 40 <= self.threat_score <= 74:
@@ -141,5 +137,5 @@ class HeuristicRuleEngine:
         return {
             "threat_score": self.threat_score,
             "final_verdict": final_verdict,
-            "insights": list(set(self.insights)) # הסרת כפילויות במקרה של לוגים חוזרים
+            "insights": list(set(self.insights)) 
         }

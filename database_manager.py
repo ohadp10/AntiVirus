@@ -82,7 +82,6 @@ class DatabaseManager:
             return None
             
         try:
-            # השאילתה דורשת התאמה גם של השם וגם של החתימה
             query = "SELECT verdict FROM known_section_hashes WHERE name = %s AND hash = %s"
             self.cursor.execute(query, (section_name, section_hash))
             result = self.cursor.fetchone()
@@ -110,7 +109,6 @@ class DatabaseManager:
             return None
             
         try:
-            # השאילתה בודקת התאמה גם של הערך וגם של הסוג (IP/URL)
             query = "SELECT verdict FROM known_iocs WHERE value = %s AND type = %s"
             self.cursor.execute(query, (ioc_value, ioc_type))
             result = self.cursor.fetchone()
@@ -138,22 +136,17 @@ class DatabaseManager:
             return False
             
         try:
-            # המרת הרשימות של פייתון לפורמט JSON מובנה (String) ש-MySQL יודע לשמור
-            # ensure_ascii=False מוודא שאם יש טקסט בעברית או תווים מיוחדים, הם יישמרו כראוי
             insights_json = json.dumps(insights, ensure_ascii=False) if insights else "[]"
             dynamic_logs_json = json.dumps(dynamic_logs, ensure_ascii=False) if dynamic_logs else "[]"
             
-            # בניית שאילתת ההכנסה
             query = """
                 INSERT INTO scan_history 
                 (file_name, file_hash, threat_score, final_verdict, insights, dynamic_logs) 
                 VALUES (%s, %s, %s, %s, %s, %s)
             """
             
-            # מיפוי הערכים לשאילתה
             values = (file_name, file_hash, threat_score, final_verdict, insights_json, dynamic_logs_json)
             
-            # ביצוע השאילתה ושמירה סופית
             self.cursor.execute(query, values)
             self.connection.commit() 
             
@@ -173,10 +166,8 @@ class DatabaseManager:
         מוסיף חתימה לטבלת known_hashes כדי שהמערכת "תלמד" לפעמים הבאות.
         תומך ב-SAFE, SUSPICIOUS ו-MALICIOUS.
         """
-        # ממירים לאותיות קטנות כדי שיתאים ל-ENUM במסד הנתונים
         verdict_lower = final_verdict.lower()
         
-        # מוודאים שהערך תקין (אחד משלושת המצבים שלנו)
         if verdict_lower not in ['safe', 'suspicious', 'malicious']:
             print(f"[-] Database: Unknown verdict '{final_verdict}', skipping auto-learning.")
             return False
@@ -189,12 +180,10 @@ class DatabaseManager:
             return False
             
         try:
-            # שימוש ב- INSERT IGNORE כדי שלא תקפוץ שגיאה אם החתימה כבר נלמדה בעבר
             query = "INSERT IGNORE INTO known_hashes (hash, verdict) VALUES (%s, %s)"
             self.cursor.execute(query, (file_hash, verdict_lower))
             self.connection.commit()
             
-            # בדיקה אם באמת התווספה שורה חדשה או שהחתימה כבר הייתה קיימת
             if self.cursor.rowcount > 0:
                 print(f"[+] Database: Hash successfully learned and added to known_hashes!")
             else:
@@ -216,7 +205,6 @@ class DatabaseManager:
         """
         verdict_lower = final_verdict.lower()
         
-        # שוב, לומדים רק מקבצים שאנחנו בטוחים לגביהם (שחור או לבן)
         if verdict_lower not in ['safe', 'malicious']:
             return False
             
@@ -227,13 +215,10 @@ class DatabaseManager:
             
         try:
             added_count = 0
-            # עוברים על כל הסקשנים במילון התוצאות
             for sec_name, data in section_hashes_dict.items():
-                # מעדכנים רק מקטעים שהיו unknown (כלומר לא היו מוכרים למערכת עד עכשיו)
                 if data.get("status") == "unknown":
                     sec_hash = data.get("hash")
                     
-                    # INSERT IGNORE מונע קריסה אם במקרה המקטע כבר קיים
                     query = "INSERT IGNORE INTO known_section_hashes (name, hash, verdict) VALUES (%s, %s, %s)"
                     self.cursor.execute(query, (sec_name, sec_hash, verdict_lower))
                     
@@ -272,14 +257,11 @@ class DatabaseManager:
             
         try:
             added_count = 0
-            # עוברים על כל האינדיקטורים במילון (מפתח = כתובת, ערך = סוג וסטטוס)
             for ioc_value, data in network_iocs_dict.items():
                 ioc_type = data.get("type")
                 status = data.get("status", "unknown").lower()
                 
-                # לומדים ושומרים רק אם הסטטוס מוחלט ולא unknown
                 if status in ['safe', 'malicious']:
-                    # INSERT IGNORE יכניס את הרשומה רק אם היא לא קיימת כבר בטבלה
                     query = "INSERT IGNORE INTO known_iocs (value, type, verdict) VALUES (%s, %s, %s)"
                     self.cursor.execute(query, (ioc_value, ioc_type, status))
                     
@@ -313,7 +295,6 @@ class DatabaseManager:
             return []
             
         try:
-            # שולפים את העמודות הרלוונטיות לתצוגה, מסודרות מהסריקה האחרונה לישנה ביותר
             query = """
                 SELECT file_name, file_hash, scan_date, threat_score, final_verdict 
                 FROM scan_history 

@@ -4,18 +4,15 @@ import paramiko
 import os
 from dotenv import load_dotenv
 
-# טעינת משתני הסביבה מתוך קובץ ה-.env
 load_dotenv()
 
 class DynamicAnalyzer:
     def __init__(self, file_path):
         self.file_path = file_path
-        # בתוך פונקציית ה-__init__ הוסף את משיכת ה-AMI
         self.clean_ami_id = os.getenv("CLEAN_AMI_ID")
         if not self.clean_ami_id:
             raise ValueError("[-] Missing CLEAN_AMI_ID in .env file!")
         
-        # משיכת הנתונים בצורה מאובטחת
         self.aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
         self.aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
         self.region = os.getenv("AWS_REGION")
@@ -23,7 +20,6 @@ class DynamicAnalyzer:
         self.admin_password = os.getenv("EC2_ADMIN_PASSWORD")
         self.key_pem_path = "sandbox_key.pem" 
         
-        # אם משהו חסר ב-.env נזרוק שגיאה מיד
         if not all([self.aws_access_key, self.aws_secret_key, self.instance_id, self.admin_password]):
             raise ValueError("[-] Missing critical AWS credentials in .env file!")
         
@@ -94,7 +90,7 @@ class DynamicAnalyzer:
             sftp.put(self.file_path, remote_malware_path)
             
             print("[*] Executing analysis agent in the cloud (Takes ~15-30 seconds)...")
-            # הפעלת הסוכן (אותו נכתוב בשלב הבא)
+            # הפעלת הסוכן 
             stdin, stdout, stderr = ssh.exec_command(f"python C:\\Sandbox\\agent.py {remote_malware_path}")
             
             # ממתינים שהפקודה תסיים לרוץ בענן
@@ -103,7 +99,6 @@ class DynamicAnalyzer:
             print(f"[*] Agent finished with exit status: {exit_status}")
             print("[*] Downloading analysis report from Cloud...")
 
-            # --- תוספת לדיבאג: קריאת פלט מהענן ---
             agent_output = stdout.read().decode('utf-8', errors='ignore').strip()
             agent_errors = stderr.read().decode('utf-8', errors='ignore').strip()
             
@@ -111,7 +106,6 @@ class DynamicAnalyzer:
                 print(f"[*] Agent Console Output:\n{agent_output}")
             if agent_errors:
                 print(f"[!] Agent Console ERRORS:\n{agent_errors}")
-            # ----------------------------------------
             
             try:
                 sftp.get(remote_report_path, "cloud_report_temp.txt")
@@ -129,15 +123,13 @@ class DynamicAnalyzer:
         finally:
             if 'ssh' in locals():
                 ssh.close()
-            # קריטי: מכבים את המכונה תמיד, גם אם הקוד קרס, כדי למנוע חיובים מיותרים ב-AWS
             self.rollback_to_clean_state()
             
         return logs
     
     def rollback_to_clean_state(self):
         """
-        מחליף את הכונן הקשיח (Root Volume) של המכונה הווירטואלית 
-        לגרסה נקייה מתוך תמונת ה-AMI, מה שמוחק לחלוטין את הוירוס שרץ עליה.
+        Rollbacks to clean image
         """
         print("\n[*] Cloud: Initiating Rollback to clean state...")
         
@@ -152,7 +144,6 @@ class DynamicAnalyzer:
             
             task_id = response['ReplaceRootVolumeTask']['ReplaceRootVolumeTaskId']
             
-            # 3. המתנה לסיום התהליך (יכול לקחת דקה-שתיים בענן)
             print(f"[*] Task created ({task_id}). Waiting for volume replacement to complete...")
             while True:
                 task_status = self.ec2.describe_replace_root_volume_tasks(
@@ -167,7 +158,7 @@ class DynamicAnalyzer:
                     print("[-] Cloud: Rollback failed!")
                     break
                     
-                time.sleep(10) # דוגמים כל 10 שניות כדי לא להעמיס על ה-API
+                time.sleep(10)
                 
         except Exception as e:
             print(f"[-] Error during Rollback: {e}")

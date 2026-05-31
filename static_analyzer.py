@@ -15,31 +15,31 @@ class StaticAnalyzer:
         self.vt_api = vt_api
 
         self.results = {
-            # --- תוצאות סעיף 1: בדיקת כותרות (PE Headers) ---
+            # 1. בדיקת כותרות
             "is_valid_pe": False,          # האם הקובץ הוא באמת קובץ הרצה תקין
             "suspicious_header": False,    # האם מצאנו חריגות בתאריך הקימפול או בגודל הכותרת
             "entry_point": "",             # הכתובת ההקסדצימלית של נקודת הכניסה
-            "ep_section": "",              # שם המקטע (Section) שבו נמצאת נקודת הכניסה
+            "ep_section": "",              # שם המקטע שבו נמצאת נקודת הכניסה
             "is_ep_suspicious": False,     # האם נקודת הכניסה נמצאת במקטע לא שגרתי
 
-            # --- תוצאות סעיף 2: ניתוח מקטעים (Sections & Entropy) ---
+            # 2. ניתוח מקטעים
             "sections_info": [],           # רשימה שתאחסן מילון לכל מקטע עם השם, הגדלים והאנטרופיה שלו
             "is_packed": False,             # דגל כללי שמעיד אם הקובץ דחוס/מוצפן (לפי UPX, אנטרופיה או יחסי גדלים)
             
-            # ---  סעיף 3: זיהוי דחיסה ופריקה  ---
+            # 3. זיהוי דחיסה ופירוק
             "unpacked_successful": False,  # מסמן האם תהליך הפריקה של UPX הצליח במלואו
 
-            # --- תוצאות סעיף 4: חישוב חתימות ובדיקת מוניטין ---
+            # 4. חישוב ובדיקת חתימות
             "file_hash": "",               # חתימת SHA-256 של הקובץ המלא
             "is_hash_malicious": "unknown",# הסטטוס של הקובץ השלם ("malicious", "safe", "unknown")
             "section_hashes": {},           # מילון שישמור לכל שם סקשן את ה-hash והסטטוס שלו
 
-            # --- תוצאות סעיף 5: חילוץ מחרוזות ופענוח (Strings & IOCs) ---
+            # 5. חילוץ ובדיקת כתובות
             "network_iocs": {},            # מילון שישמור כתובות IP ו-URLs שנמצאו (המפתח הוא הכתובת, הערך הוא הסטטוס)
             "decoded_strings": [],         # רשימה של מחרוזות שהצלחנו לפענח מקידוד Base64 או XOR
             "obfuscation_detected": False,  # דגל שנדלק אם זיהינו שימוש אקטיבי בהסתרת מחרוזות
 
-            # --- תוצאות סעיף 6: הנדסה לאחור וניתוח API (Disassembly & IAT) ---
+            # 6. ניתוח אסמבלי
             "imported_functions": {},      # מילון של כל ה-DLLs והפונקציות שהקובץ טוען
             "suspicious_imports": [],      # רשימה מסוננת של פונקציות מסוכנות במיוחד שנמצאו
             "assembly_risk_score": 0,      # ציון הסיכון שחושב מניתוח פקודות האסמבלי
@@ -54,19 +54,18 @@ class StaticAnalyzer:
         """
         print("[*] Step 1: Verifying PE Header and Entry Point...")
         try:
-            # טעינת הקובץ באמצעות ספריית pefile.
             pe = pefile.PE(self.file_path)
 
-            # --- 1. בדיקת Magic Number (וידוא שהקובץ הוא קובץ הרצה) ---
+            # 1. בדיקת magic number
             if hex(pe.DOS_HEADER.e_magic) == '0x5a4d':
                 print("[+] Success: Valid PE file detected (Magic Number: 0x4D5A).")
                 self.results["is_valid_pe"] = True
             else:
                 print("[-] Failed: The Magic Number does not match a valid PE file.")
                 self.results["is_valid_pe"] = False
-                return True# יציאה מוקדמת, אין טעם להמשיך לנתח קובץ שהוא לא PE
+                return True
 
-            # --- 2. בדיקת TimeDateStamp (זיהוי תאריכי קימפול מזויפים) ---
+            # 2. בדיקת timestamp
             timestamp = pe.FILE_HEADER.TimeDateStamp
             compile_date = datetime.utcfromtimestamp(timestamp)
             current_date = datetime.utcnow()
@@ -82,14 +81,13 @@ class StaticAnalyzer:
             else:
                 self.results["suspicious_header"] = False
 
-            # --- 3. בדיקת SizeOfOptionalHeader (וידוא שלא החביאו נתונים בכותרת) ---
-            # 224 זה הגודל התקני לארכיטקטורת 32-bit, ו-240 לארכיטקטורת 64-bit
+            # 3. בדיקת optionalheadersize
             opt_header_size = pe.FILE_HEADER.SizeOfOptionalHeader
             if opt_header_size not in [224, 240]:
                 print(f"[!] Warning: Non-standard SizeOfOptionalHeader detected: {opt_header_size} bytes.")
                 self.results["suspicious_header"] = True
 
-            # --- 4. בדיקת נקודת הכניסה (Entry Point) ---
+            # 4. בדיקת entrypoint
             ep = pe.OPTIONAL_HEADER.AddressOfEntryPoint
             ep_section = None
             
@@ -99,7 +97,6 @@ class StaticAnalyzer:
                     ep_section = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
                     break
             
-            # שמירת הנתונים במילון התוצאות
             self.results["entry_point"] = hex(ep)
             self.results["ep_section"] = ep_section
             print(f"[*] Entry Point Address: {hex(ep)}")
@@ -151,8 +148,7 @@ class StaticAnalyzer:
 
     def analyze_sections(self):
         """
-        סעיף 2: ניתוח מקטעים וחישוב אנטרופיה
-        בדיקת שמות הסקשנים, יחסי גדלים ואיתור קוד דחוס/מוצפן.
+        Analyzing the file's sections
         """
         print("[*] Step 2: Analyzing Sections and Calculating Entropy...")
         try:
@@ -161,31 +157,29 @@ class StaticAnalyzer:
             is_file_packed = False
             
             for section in pe.sections:
-                # חילוץ שם הסקשן וניקוי תווי NULL
                 sec_name = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
                 virtual_size = section.Misc_VirtualSize
                 raw_size = section.SizeOfRawData
                 
-                # --- 1. חישוב אנטרופיה למקטע ---
+                # 1. חישוב entropy
                 sec_bytes = section.get_data()
                 entropy_val = self.calculate_entropy(sec_bytes)
                 
-                # בדיקה אם האנטרופיה חריגה (מעל 7.2 מצביע על דחיסה/הצפנה לפי האפיון)
+                # בדיקה אם האנטרופיה חריגה
                 is_high_entropy = entropy_val > 7.2
                 
-                # --- 2. בדיקת יחסי גדלים בזיכרון מול הדיסק ---
-                # אם המקטע תופס הרבה יותר מקום בזיכרון מאשר על הדיסק (למשל פי 2)
+                # 2. בדיקץ יחסי גדלים בין מקום בזיכרון מאשר הדיסק
+                # אם המקטע תופס הרבה יותר מקום בזיכרון מאשר על הדיסק
                 # זה סימן מובהק ל- Unpacking בזמן ריצה
                 # מחריגים סקשנים של נתונים שבהם זה נורמלי שמוקצה זיכרון ריק מראש
                 is_data_section = sec_name.lower() in ['.data', '.bss', '.rdata']
                 suspicious_size = virtual_size > (raw_size * 2) and raw_size > 0 and not is_data_section
                 
-                # --- 3. בדיקת שמות מחשידים ---
+                # 3. בדיקת שמות סקשנים חשודים
                 is_upx = "UPX" in sec_name.upper()
                 if is_upx or is_high_entropy or suspicious_size:
                     is_file_packed = True
                 
-                # בניית דוח למקטע הנוכחי
                 sec_info = {
                     "name": sec_name,
                     "virtual_size": virtual_size,
@@ -197,14 +191,12 @@ class StaticAnalyzer:
                 }
                 sections_data.append(sec_info)
                 
-                # הדפסת ממצאים למסך עבור דיבאגינג
                 print(f"    -> Section '{sec_name}': Entropy = {sec_info['entropy']}")
                 if is_high_entropy:
                     print(f"       [!] Warning: High entropy detected! Section might be packed/encrypted.")
                 if suspicious_size:
                     print(f"       [!] Warning: VirtualSize ({virtual_size}) is significantly larger than RawSize ({raw_size}).")
                     
-            # שמירת התוצאות לשימוש במנוע ההיוריסטי בהמשך
             self.results["sections_info"] = sections_data
             self.results["is_packed"] = is_file_packed
             
@@ -222,8 +214,7 @@ class StaticAnalyzer:
 
     def detect_and_unpack(self):
         """
-        סעיף 3: זיהוי דחיסה ופריקה (Unpacking)
-        בדיקה האם הקובץ דחוס, ואם כן - הפעלת כלי UPX ואימות לפי גודל הקובץ.
+        Checks for packing and unpacking the file
         """
         print("\n[*] Step 3: Checking for packed executable and unpacking (UPX)...")
         
@@ -231,6 +222,7 @@ class StaticAnalyzer:
         
         try:
             pe = pefile.PE(self.file_path)
+            #בודק את כל השמות של הסקשנים אם הם השתנו ל UPX
             for section in pe.sections:
                 sec_name = section.Name.decode('utf-8', errors='ignore').rstrip('\x00')
                 if "UPX" in sec_name.upper():
@@ -249,6 +241,7 @@ class StaticAnalyzer:
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
                 
+            # מחליף את הכתובת של הקובץ לכתובת החדשה של הקובץ הלא דחוס
             file_name = os.path.basename(self.file_path)
             if ".exe" in file_name.lower():
                 unpacked_file_name = file_name.replace(".exe", "_unpacked.exe")
@@ -258,13 +251,14 @@ class StaticAnalyzer:
             unpacked_path = os.path.join(output_dir, unpacked_file_name)
             original_file_path = self.file_path
             
+            # פורק את הקובץ הדחוס
             process = subprocess.run(
                 ['upx', '-d', original_file_path, '-o', unpacked_path], 
                 capture_output=True, text=True
             ) 
 
             if process.returncode == 0 and os.path.exists(unpacked_path):
-                # --- התוספת מספר הפרויקט: וידוא שהקובץ גדל משמעותית ---
+                # לוודא שהקובץ לא גדול מידי
                 original_size = os.path.getsize(original_file_path)
                 unpacked_size = os.path.getsize(unpacked_path)
                 
@@ -299,8 +293,7 @@ class StaticAnalyzer:
 
     def calculate_and_check_hashes(self):
         """
-        סעיף 4: חישוב חתימות ובדיקת מוניטין (Hashing & Reputation)
-        מחשב SHA-256 לכל הקובץ ולכל סקשן בנפרד, ובודק אותם מול ה-DB ו-VirusTotal.
+        Calculates and checks Hash
         """
         print("\n[*] Step 4: Calculating Hashes and Checking Reputation...")
         
@@ -308,7 +301,6 @@ class StaticAnalyzer:
         hasher = hashlib.sha256()
         try:
             with open(self.file_path, 'rb') as f:
-                # קריאה בבלוקים כדי לא להעמיס על הזיכרון בקבצים גדולים
                 for chunk in iter(lambda: f.read(4096), b""):
                     hasher.update(chunk)
             
@@ -321,14 +313,10 @@ class StaticAnalyzer:
             self.results["is_hash_malicious"] = "unknown"
             return False
 
-        # --- אתחול סטטוס למקרה שהמקורות לא זמינים ---
         self.results["is_hash_malicious"] = "unknown"
         
-        # 2. בדיקה מול מסד הנתונים המקומי (MySQL)
         if self.db_manager:
             try:
-                # אנחנו מניחים שיש לך אתחול לחיבור (self.db_manager.open_connection() וכו')
-                # במקום אחר או שהוא פתוח כברירת מחדל במחלקה שלו
                 db_verdict = self.db_manager.check_hash_file(full_file_hash)
                 
                 if db_verdict == 'malicious':
@@ -348,7 +336,6 @@ class StaticAnalyzer:
         else:
             print("[-] Warning: Database Manager is not connected.")
 
-        # 3. בדיקה מול מאגר המידע של VirusTotal
         if self.vt_api:
             try:
                 vt_verdict = self.vt_api.check_file_hash(full_file_hash)
@@ -367,10 +354,9 @@ class StaticAnalyzer:
             
         print("[+] Full file hash is unknown. Proceeding to calculate section hashes...")
 
-        # 4. חישוב Hash פרטני לכל סקשן
+        # חישוב hash לכל סקשן
         try:
             pe = pefile.PE(self.file_path)
-            # אם לא פתחנו חיבור למסד הנתונים קודם, נוודא שהוא פתוח עכשיו
             if self.db_manager:
                 self.db_manager.open_connection()
                 
@@ -384,7 +370,6 @@ class StaticAnalyzer:
                     
                     status = "unknown"
                     
-                    # בדיקת המקטע הספציפי מול מסד הנתונים המקומי
                     if self.db_manager:
                         try:
                             db_sec_verdict = self.db_manager.check_section_hash(sec_name, sec_hash)
@@ -397,7 +382,6 @@ class StaticAnalyzer:
                         except Exception as e:
                             print(f"       [-] Error checking section hash in DB: {e}")
                     
-                    # עדכון המילון הפרטני של הסקשן
                     self.results["section_hashes"][sec_name] = {
                         "hash": sec_hash,
                         "status": status
@@ -417,20 +401,20 @@ class StaticAnalyzer:
 
     def _decode_base64_xor(self, content_bytes):
         """
-        פונקציית עזר לחילוץ ופענוח מחרוזות מוסתרות (Base64 ו-XOR)
+        Decodes ips and urls
         """
         decoded_findings = []
         obfuscation_flag = False
 
-        # 1. חיפוש תבניות Base64 (רצפים של אותיות, מספרים, + ו-/)
-        # מחפשים מחרוזות באורך 16 תווים לפחות כדי למנוע זיהויי שווא (False Positives)
+        # 1. חיפוש תבניות Base64
+        # מחפשים מחרוזות באורך 16 תווים לפחות כדי למנוע זיהויי שווא
         b64_pattern = re.compile(rb'(?:[A-Za-z0-9+/]{4}){4,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')
         b64_matches = set(b64_pattern.findall(content_bytes))
         
         for match in b64_matches:
             try:
                 decoded_bytes = base64.b64decode(match)
-                # בודקים אם התוצאה היא טקסט קריא (ASCII)
+                # בודקים אם התוצאה היא טקסט קריא 
                 decoded_str = decoded_bytes.decode('utf-8')
                 # סינון בסיסי: אם זה מכיל תווים הגיוניים ומילים
                 if len(decoded_str) > 5 and re.match(r'^[\x20-\x7E]+$', decoded_str):
@@ -440,12 +424,11 @@ class StaticAnalyzer:
             except:
                 pass # לא כל רצף שמתאים ל-Regex הוא באמת Base64 תקין
 
-        # 2. חיפוש XOR בסיסי (בדיקה מול מפתחות נפוצים בנוזקות כמו 0x55, 0xAA, 0xFF)
-        # כדי לא להכביד על זמן הריצה, נבדוק רק רצפים שנראים כמו טקסט אבל מוסתרים
+        # 2. חיפוש XOR בסיסי 
+        # בודק רצפים שנראים כמו טקסט קריא
         common_xor_keys = [0x55, 0xAA, 0xFF]
         
-        # אנחנו מחפשים רצפי בתים שאם נעשה להם XOR עם המפתחות האלה, נקבל "http" או כתובות
-        # (מטעמי יעילות בניתוח הסטטי, זה מימוש בסיסי. הניתוח הדינמי יתפוס את השאר)
+        # מחפשים רצפים שאם נעשה עליהם xor נקבל משהו כמו https
         for key in common_xor_keys:
             target_magic = [ord('h') ^ key, ord('t') ^ key, ord('t') ^ key, ord('p') ^ key]
             magic_bytes = bytes(target_magic)
@@ -460,7 +443,7 @@ class StaticAnalyzer:
     
     def extract_and_check_network_iocs(self):
         """
-        סעיף 5: חילוץ כתובות IP, URLs ופענוח מחרוזות מוסתרות
+        Extracting and checking ips and urls
         """
         print("\n[*] Step 5: Extracting Strings, Decoding & Checking Network IOCs...")
         
@@ -512,11 +495,12 @@ class StaticAnalyzer:
         
     
     def _evaluate_ioc(self, ioc_value, ioc_type):
-        """פונקציית עזר לבדיקת האינדיקטור מול מסד הנתונים ו-VirusTotal"""
+        """
+        Checks the ip or url in DB and VirusTotal
+        """
         status = "unknown"
         print(f"    -> Found {ioc_type.upper()}: {ioc_value}")
         
-        # בדיקה מול מסד הנתונים המקומי
         if self.db_manager:
             try:
                 db_verdict = self.db_manager.check_ips_urls(ioc_value, ioc_type)
@@ -529,7 +513,6 @@ class StaticAnalyzer:
             except Exception as e:
                 print(f"       [-] DB Check Error: {e}")
                 
-        # בדיקה מול VirusTotal אם לא נמצא ב-DB
         if status == "unknown" and self.vt_api:
             try:
                 vt_verdict = self.vt_api.check_ip_url(ioc_value, ioc_type)
@@ -551,15 +534,14 @@ class StaticAnalyzer:
 
     def analyze_assembly(self):
         """
-        סעיף 6: הנדסה לאחור וניתוח IAT
-        שליפת פונקציות API מחשידות, פירוק הקוד לאסמבלי, ומעקב אחרי שרשראות JMP/CALL.
+        Assembly Analyze
         """
         print("\n[*] Step 6: Analyzing API Imports (IAT) and Disassembling Code...")
 
         try:
             pe = pefile.PE(self.file_path)
             
-            # --- חלק א': חילוץ וניתוח Import Address Table (IAT) ---
+            # חילוץ וניתוח טבלת IAT
             dangerous_apis = [
                 'virtualalloc', 'virtualallocex', 'writeprocessmemory', 
                 'createremotethread', 'loadlibrarya', 'getprocaddress', 
@@ -570,10 +552,12 @@ class StaticAnalyzer:
             found_suspicious_apis = []
             
             if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
+                # סורק את הקובץ ומציא משם את כל קבצי הdll שהקובץ אומר שהוא צריך
                 for entry in pe.DIRECTORY_ENTRY_IMPORT:
                     dll_name = entry.dll.decode('utf-8', errors='ignore').lower()
                     imports_dict[dll_name] = []
                     
+                    # בודק את שמות הפונקציות הספציפיות לבדוק אם יש התאמה לרשימה השחורה
                     for imp in entry.imports:
                         if imp.name:
                             func_name = imp.name.decode('utf-8', errors='ignore')
@@ -590,13 +574,14 @@ class StaticAnalyzer:
             else:
                 print("    [+] No highly suspicious API imports detected.")
 
-            # --- חלק ב': פירוק לאסמבלי (Capstone) ומעקב זרימת קוד ---
+            # פירוק לאסמבלי
             if pe.FILE_HEADER.Machine == 0x8664:
                 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
             else:
                 md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
                 
             code_section = None
+            # מחפש את הסקשן שאפשר להריץ יש לו הרשאה כזאת
             for section in pe.sections:
                 if section.Characteristics & 0x20000000:
                     code_section = section
@@ -624,6 +609,7 @@ class StaticAnalyzer:
             
             instructions = md.disasm(code_data, code_section.VirtualAddress)
             
+            # מחפש שרשראות של פקודות לא לגיטימיות
             for i, inst in enumerate(instructions):
                 if i >= 10000:
                     break

@@ -8,10 +8,10 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import frida
 
-# --- מחלקה לניטור קבצים (FileSystemWatcher) ---
 class SandboxFileMonitor(FileSystemEventHandler):
     def __init__(self, event_list):
         self.event_list = event_list
+    # מאזינה ברקע למערכת ההפעלה
 
     def on_created(self, event):
         if not event.is_directory:
@@ -37,11 +37,10 @@ class AdvancedSandboxAgent:
         self.etw_trace_name = "MalwareETWTrace"
         self.etw_output_file = os.path.join(self.watch_dir, "trace.etl")
         
-        # מבני נתונים חדשים ומעודכנים (כולל עץ תהליכים)
         self.file_events = []
         self.api_hooks_events = []
         self.network_events = []
-        self.process_tree = {}  # Abstract Tree: Parent_PID -> [Child_PIDs]
+        self.process_tree = {} 
         self.running = True
 
     def start_filesystem_watcher(self):
@@ -192,7 +191,7 @@ class AdvancedSandboxAgent:
 
         report.append("\n--- OS FILE SYSTEM LOGS (WATCHDOG) ---")
         if self.file_events:
-            report.extend(list(dict.fromkeys(self.file_events))) # הסרת כפילויות תוך שמירה על סדר
+            report.extend(list(dict.fromkeys(self.file_events)))
         else:
             report.append("[+] No anomalous file creation or data modification detected.")
 
