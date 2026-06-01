@@ -1,5 +1,4 @@
 import sys
-import os
 import time
 import subprocess
 import threading
@@ -7,6 +6,167 @@ import json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import frida
+import ctypes
+import ctypes.wintypes as wintypes
+import threading
+import time
+import os
+
+
+# Custome File Monitor
+class CustomDirectoryMonitor(threading.Thread):
+    """
+    מנגנון שעוקב אחרי שינויים במערכת הקבצים בעזרת Windows API
+    שימוש בשפת c בעזרת python
+    """
+    def __init__(self, watch_dir, event_list):
+        super().__init__()
+        self.watch_dir = watch_dir 
+        self.event_list = event_list
+        self.running = True
+        self.daemon = True
+
+    def run(self):
+        FILE_LIST_DIRECTORY = 0x0001 # הרשאה לקרוא את התוכן 
+        FILE_SHARE_READ = 0x00000001 # הרשאות לתוכנות אחרות לקרוא, לכתוב ולמחוק
+        FILE_SHARE_WRITE = 0x00000002
+        FILE_SHARE_DELETE = 0x00000004
+        OPEN_EXISTING = 3 # כדי לא לנעול את התיקייה, זה מבקש לפתוח אותה רק אם היא קיימת 
+        FILE_FLAG_BACKUP_SEMANTICS = 0x02000000 # לקבל הרשאה ממערכת ההפעלה להתייחס לתיקייה כמו קובץ כדי לקבל handle
+        NOTIFY_FILTERS = (0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00000010 | 0x00000100) # סוגי התרעות מווינדוס: שינוי שם קובץ, שינוי שם תיקייה, שינוי תכונות, שינוי גודל, כתיבה אחרונה, ושינוי הרשאות אבטחה.
+
+        # פתיחת חיבור ישיר לתיקייה ברמת מערכת ההפעלה
+        # מחזיר hanle לתיקייה
+        hDir = ctypes.windll.kernel32.CreateFileW(
+            self.watch_dir, FILE_LIST_DIRECTORY,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, None
+        )
+
+        if hDir == -1:
+            print("[-] Custom Monitor Error: Could not get directory handle.")
+            return
+
+        # הגדרה של בלוק זיכרון שלשם יגיעו הנתונים
+        buffer = ctypes.create_string_buffer(8192)
+        # כמה בתים של מידע נכתבו, ממיר את הסוג משתנה ל dword
+        bytes_returned = wintypes.DWORD()
+
+        ACTIONS = {1: "FILE CREATED", 2: "FILE DELETED", 3: "FILE MODIFIED"}
+
+        while self.running:
+            # האזנה שקטה דרך Windows API
+            # נותנים לפונקציה הזאת את ההנדל של התיקייה את הבאפר שלשם ירשמו הנתונים
+            result = ctypes.windll.kernel32.ReadDirectoryChangesW(
+                hDir, buffer, ctypes.sizeof(buffer), True, 
+                NOTIFY_FILTERS, ctypes.byref(bytes_returned), None, None
+            )
+
+            if result and bytes_returned.value > 0:
+                offset = 0
+                while True:
+                    # קוד הפעולה בתים ממקיום 4 עד 8 והופכים אותם למספר שלם
+                    action_code = int.from_bytes(buffer[offset+4:offset+8], byteorder='little')
+                    # בתים ממיקום 8 עד 12 מציגים את אורך שם הקובץ
+                    name_length = int.from_bytes(buffer[offset+8:offset+12], byteorder='little')
+                    # בתים מ12 עד לאורך שם הקובץ הם שם הקובץ עצמו
+                    name_bytes = buffer[offset+12:offset+12+name_length]
+                    # ממירים את הבתים של שם הקובץ לטקסט קריא מסוג ascii
+                    file_name = name_bytes.decode('utf-16le', errors='ignore')
+                    
+
+                    if action_code in ACTIONS:
+                        action_str = ACTIONS[action_code]
+                        full_path = os.path.join(self.watch_dir, file_name)
+                        self.event_list.append(f"[{time.strftime('%H:%M:%S')}] [CUSTOM] {action_str}: {full_path}")
+                    
+                    # בתחילת ההודעה בבתים 0 עד 4 מופיע האופסט של ההודעה הבאה
+                    next_entry_offset = int.from_bytes(buffer[offset:offset+4], byteorder='little')
+                    # אם האופסט הוא 0 אז נגמרו ההודעות
+                    if next_entry_offset == 0:
+                        break
+                    offset += next_entry_offset
+
+# Custom Native Debugger
+class CustomNativeDebugger(threading.Thread):
+    """
+    מנגנון מיני-דיבאגר בסיסי ב-Python שמתמשק ל-Windows Debug API.
+    מחליף את Frida על ידי מעקב אחרי אירועי מערכת (טעינת DLLs, חריגות, וכו') 
+    ללא הזרקת קוד.
+    """
+    def __init__(self, malware_path, event_list):
+        super().__init__()
+        self.malware_path = malware_path
+        self.event_list = event_list
+        self.running = True
+        self.daemon = True
+
+    def run(self):
+        DEBUG_ONLY_THIS_PROCESS = 0x00000002
+        
+        # מבנים של ווינדוס (Structures)
+        class STARTUPINFO(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), 
+                        ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
+                        ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+                        ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
+                        ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
+                        ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                        ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+                        ("lpReserved2", ctypes.POINTER(wintypes.BYTE)),
+                        ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE),
+                        ("hStdError", wintypes.HANDLE)]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+                        ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+
+        class DEBUG_EVENT(ctypes.Structure):
+            _fields_ = [("dwDebugEventCode", wintypes.DWORD), ("dwProcessId", wintypes.DWORD),
+                        ("dwThreadId", wintypes.DWORD), ("u", ctypes.c_byte * 160)]
+
+        startupinfo = STARTUPINFO()
+        startupinfo.cb = ctypes.sizeof(startupinfo)
+        processinfo = PROCESS_INFORMATION()
+
+        # יצירת התהליך במצב Debug
+        success = ctypes.windll.kernel32.CreateProcessW(
+            None, self.malware_path, None, None, False, 
+            DEBUG_ONLY_THIS_PROCESS, None, None, 
+            ctypes.byref(startupinfo), ctypes.byref(processinfo)
+        )
+
+        if not success:
+            print("[-] Custom Debugger Error: Failed to launch target.")
+            return
+
+        debug_event = DEBUG_EVENT()
+        DBG_CONTINUE = 0x00010002
+        start_time = time.time()
+
+        while self.running and (time.time() - start_time < 10):
+            # המתנה לאירוע חריג או פעולה של הוירוס
+            if ctypes.windll.kernel32.WaitForDebugEvent(ctypes.byref(debug_event), 100):
+                event_code = debug_event.dwDebugEventCode
+                
+                if event_code == 1:
+                    self.event_list.append("[NATIVE DEBUGGER] EXCEPTION intercepted in target process.")
+                elif event_code == 2:
+                    self.event_list.append(f"[NATIVE DEBUGGER] Target spawned a new thread (TID: {debug_event.dwThreadId}).")
+                elif event_code == 6: # LOAD_DLL_DEBUG_EVENT
+                    self.event_list.append("[NATIVE DEBUGGER] Target dynamically loaded a DLL into memory.")
+                elif event_code == 5: # EXIT_PROCESS_DEBUG_EVENT
+                    ctypes.windll.kernel32.ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, DBG_CONTINUE)
+                    break
+                
+                # שחרור הוירוס להמשך פעולה
+                ctypes.windll.kernel32.ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, DBG_CONTINUE)
+
+        ctypes.windll.kernel32.DebugActiveProcessStop(processinfo.dwProcessId)
+        ctypes.windll.kernel32.TerminateProcess(processinfo.hProcess, 0)
+        ctypes.windll.kernel32.CloseHandle(processinfo.hProcess)
+        ctypes.windll.kernel32.CloseHandle(processinfo.hThread)
+
 
 class SandboxFileMonitor(FileSystemEventHandler):
     def __init__(self, event_list):
@@ -89,6 +249,12 @@ class AdvancedSandboxAgent:
             Interceptor.attach(Module.findExportByName('kernel32.dll', 'CreateFileW'), {
                 onEnter: function (args) {
                     send({ api: 'CreateFileW', details: 'Accessed file: ' + Memory.readUtf16String(args[0]) });
+                }
+            });
+            Interceptor.attach(Module.findExportByName('advapi32.dll', 'RegSetValueExW'), {
+                onEnter: function (args) {
+                    // ברגע שוירוס מנסה לכתוב ערך לרג'יסטרי, נשלח את מחרוזת הקסם שההיוריסטיקה מחפשת
+                    send({ api: 'RegSetValueExW', details: 'REGISTRY MODIFIED - Attempted to set registry key value' });
                 }
             });
             """
