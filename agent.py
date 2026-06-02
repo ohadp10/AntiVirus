@@ -86,7 +86,7 @@ class CustomDirectoryMonitor(threading.Thread):
 # Custom Native Debugger
 class CustomNativeDebugger(threading.Thread):
     """
-    דיבאגר לוירוס - נותן מידע על טעינת ספריות dll 
+    דיבאגר לוירוס - נותן מידע על טעינת ספריות dll או יצירת thread חדש
     """
     def __init__(self, malware_path, event_list, process_tree):
         super().__init__()
@@ -97,7 +97,7 @@ class CustomNativeDebugger(threading.Thread):
         self.daemon = True
 
     def run(self):
-        DEBUG_ONLY_THIS_PROCESS = 0x00000002
+        DEBUG_ONLY_THIS_PROCESS = 0x00000002 # עושים דיבאג רק לתהליך הזה ולא לבנים שלו
 
         startupinfo = STARTUPINFO()
         startupinfo.cb = ctypes.sizeof(startupinfo)
@@ -118,7 +118,7 @@ class CustomNativeDebugger(threading.Thread):
         self.process_tree["Root"] = {"PID": processinfo.dwProcessId, "Children": []}
 
         debug_event = DEBUG_EVENT()
-        DBG_CONTINUE = 0x00010002
+        DBG_CONTINUE = 0x00010002 # קבוע שנותן למערכת ההפעלה להמשיך ולשחרר את הוירוס
         start_time = time.time()
 
         while self.running and (time.time() - start_time < 10):
@@ -144,9 +144,13 @@ class CustomNativeDebugger(threading.Thread):
                 # שחרור הוירוס להמשך פעולה
                 ctypes.windll.kernel32.ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, DBG_CONTINUE)
 
+        # מנתק את הדיבאג
         ctypes.windll.kernel32.DebugActiveProcessStop(processinfo.dwProcessId)
+        # הורג את התהליך
         ctypes.windll.kernel32.TerminateProcess(processinfo.hProcess, 0)
+        # סוגר את הגישה לתהליך
         ctypes.windll.kernel32.CloseHandle(processinfo.hProcess)
+        # סוגר את הגישה לתהליכון הראשי
         ctypes.windll.kernel32.CloseHandle(processinfo.hThread)
 
 
