@@ -193,14 +193,19 @@ class AdvancedSandboxAgent:
             "Microsoft-Windows-Kernel-Process", "0x10", "-ets", 
             "-o", self.etw_output_file
         ]
+        # 0x10 = דגל התנהגות שאומר איזה סוג אירוע צריכים לקבל
+        # -ets = שולח את האירוע לסשן הפעיל בלי לקנפג בממשק של וינדוס
+
         subprocess.run(start_cmd, capture_output=True)
         print("[+] ETW Trace session active.")
 
     def run_network_capture(self):
-        """ מפעיל את הניטור הפסיבי של הרשת """
+        """ מפעיל את הניטור הרשת """
         print("[*] Launching Tshark Network Promiscuous Sniffer...")
+        # בוחר את כרטיס הרשת הראשון, חותך את ההקלטה ל15 שניות ורושם בסוף בקובץ pcap
         tshark_cmd = ["tshark", "-i", "1", "-a", "duration:15", "-w", self.pcap_path]
         try:
+            # יוצר את התהליך ברקע, ההדפסות הולכות פח האשפה
             return subprocess.Popen(tshark_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             print("[-] Error: Tshark is not configured in the system Path.")
@@ -209,13 +214,14 @@ class AdvancedSandboxAgent:
     def detonate_malware(self):
         print(f"[*] Detonating target binary natively: {os.path.basename(self.malware_path)}")
         try:
-            # הפעלת הנוזקה דרך הדיבאגר המותאם אישית שלנו (מחליף את הקריאה ל-subprocess.Popen ול-frida)
+            # הפעלת הנוזקה דרך הדיבאגר
             self.debugger = CustomNativeDebugger(self.malware_path, self.api_hooks_events, self.process_tree)
             self.debugger.start()
             
-            # נותנים לנוזקה זמן לרוץ (הדיבאגר מוגבל בפנים ל-10 שניות)
+            # נותנים לנוזקה זמן לרוץ (הדיבאגר מוגבל בפנים ל-12 שניות)
             self.debugger.join(timeout=12)
             
+            # אם אחרי 12 שניות הדיבאג עדיין עובד מכבים אותו בכוח
             if self.debugger.is_alive():
                 print("[*] Target execution timed out and debugger is stopping it.")
                 self.debugger.running = False
@@ -228,7 +234,8 @@ class AdvancedSandboxAgent:
         """ עוצר את ה-ETW וממיר את התוצאות לפורמט קריא """
         print("[*] Stopping ETW and dumping data...")
         subprocess.run(["logman", "stop", self.etw_trace_name, "-ets"], capture_output=True)
-        # בפרויקט אמיתי מעבירים את הקובץ xml_output לפארסר מורכב יותר
+        
+        # ממיר את הקובץ ETL ל XML 
         xml_output = os.path.join(self.watch_dir, "trace.xml")
         subprocess.run(["tracerpt", self.etw_output_file, "-o", xml_output, "-of", "XML"], capture_output=True)
         print("[+] ETW Trace converted to XML.")
@@ -241,6 +248,7 @@ class AdvancedSandboxAgent:
         print("[*] Processing PCAP file through Advanced Protocol Parsers...")
         # 1. DNS
         try:
+            # מחפש בעזרת tshark בקשות dns יוצאות ומחפש את השם דומיין
             dns_cmd = ["tshark", "-r", self.pcap_path, "-Y", "dns.flags.response == 0", "-T", "fields", "-e", "dns.qry.name"]
             res = subprocess.run(dns_cmd, capture_output=True, text=True)
             queries = set([line.strip() for line in res.stdout.split('\n') if line.strip()])
@@ -250,6 +258,7 @@ class AdvancedSandboxAgent:
 
         # 2. HTTP
         try:
+            # מוציא מבקשות יוצאות רק את השרת, סוג הדפדפן ואת השיטה GET OR POST
             http_cmd = ["tshark", "-r", self.pcap_path, "-Y", "http.request", "-T", "fields", "-e", "http.host", "-e", "http.user_agent", "-e", "http.request.method"]
             res = subprocess.run(http_cmd, capture_output=True, text=True)
             for line in res.stdout.split('\n'):
@@ -261,6 +270,7 @@ class AdvancedSandboxAgent:
 
         # 3. חישוב חתימות JA3 (תקשורת מוצפנת)
         try:
+            # מחפש חבילות של client hello של הצפנה של tls ומוציא מהם את חתימת ja3
             ja3_cmd = ["tshark", "-r", self.pcap_path, "-Y", "tls.handshake.type == 1", "-T", "fields", "-e", "tls.handshake.ja3"]
             res = subprocess.run(ja3_cmd, capture_output=True, text=True)
             ja3_hashes = set([line.strip() for line in res.stdout.split('\n') if line.strip()])

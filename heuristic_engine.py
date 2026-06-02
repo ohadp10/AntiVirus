@@ -28,8 +28,10 @@ class HeuristicRuleEngine:
         except KeyError:
             return # נתיב לא חוקי בעץ
 
-        # ניהול מנגנון הדעיכה (Decay)
+        # ניהול מנגנון הדעיכה 
+        # הופך את רשימת הנתיב בעץ למשפט מלא
         path_str = "->".join(category_path)
+        # בודק כמה פעמים הופיעה כבר הרשימת נתיב הזאת
         hits = self.hit_counts.get(path_str, 0)
         
         # כל פגיעה נוספת באותו חוק שווה רק 75% מהפגיעה הקודמת
@@ -49,36 +51,39 @@ class HeuristicRuleEngine:
                 self.flags.add(flag_to_add)
 
     def _evaluate_static_data(self):
-        """ סריקת עץ הסטטיקה """
+        """שקלול המידע הסטטי """
 
-        # Structure
+        # הסוואה
         if self.static_results.get("is_ep_suspicious"):
             self._add_score(["static", "structure", "suspicious_ep"], "[STATIC] Suspicious Entry Point detected.", "EVASION")
             
-        # Obfuscation
+        # ערפול
         if self.static_results.get("is_packed") and not self.static_results.get("unpacked_successful"):
             self._add_score(["static", "obfuscation", "custom_packer"], "[STATIC] Unknown/Custom packer detected.", "OBFUSCATION")
             
+        # בדיקת אנטרופיה גבוהה לכל סקשן
         for sec in self.static_results.get("sections_info", []):
             if sec.get("is_high_entropy"):
                 self._add_score(["static", "obfuscation", "high_entropy"], f"[STATIC] High Entropy in section '{sec['name']}' (Encrypted Payload).", "OBFUSCATION")
                 break 
                 
-        # API Imports
+        # פונקציות מסוכנות שנטענות ממערכת ההפעלה
         suspicious_imports = self.static_results.get("suspicious_imports", [])
         for api in suspicious_imports:
             self._add_score(["static", "imports", "suspicious_api"], f"[STATIC] Suspicious API import: {api}", "API_ABUSE")
 
-        # Assembly Heuristics
+        # סימני התחמקות כמו anti-vm
         asm_heuristics = self.static_results.get("assembly_heuristics", {})
         if asm_heuristics.get("rdtsc_anti_vm") or asm_heuristics.get("cpuid_evasion") or asm_heuristics.get("peb_direct_access"):
             self._add_score(["static", "assembly", "anti_vm"], "[STATIC] Assembly heuristics indicate Anti-VM.", "EVASION")
             
+        # שרשראות קפיצה או טעינות דינמיות
+        # מראה על ערפול
         if asm_heuristics.get("dynamic_api_loading") or asm_heuristics.get("chained_execution"):
             self._add_score(["static", "assembly", "dynamic_chains"], "[STATIC] Assembly flow shows dynamic API loading.", "OBFUSCATION")
 
     def _evaluate_dynamic_data(self):
-        """ סריקת עץ הדינמיקה על ידי פירוק לוגים מובנה """
+        """ שקלול המידע הדינמי"""
         if not self.dynamic_logs:
             self.insights.append("[DYNAMIC] No dynamic logs available (Execution failed).")
             return
@@ -86,33 +91,35 @@ class HeuristicRuleEngine:
         for log in self.dynamic_logs:
             log_lower = log.lower()
             
-            # Process Activity
+            # האם נוצר תהליך בן (Payload)
             if "process created" in log_lower:
                 if any(p in log_lower for p in ["cmd.exe", "powershell.exe", "vssadmin.exe"]):
                     self._add_score(["dynamic", "process", "shell_spawn"], "[DYNAMIC] Malware spawned a suspicious shell.", "SHELL_EXEC")
             
+            # האם הדיבאגר מצא פונקציות של הזרקת קוד
             if "virtualallocex" in log_lower or "writeprocessmemory" in log_lower or "code injection" in log_lower:
                 self._add_score(["dynamic", "process", "injection"], "[DYNAMIC] Process memory injection detected.", "INJECTION")
 
-            # Registry Activity
+            # שינוי ברגסטרי 
             if "registry modified" in log_lower:
                 self._add_score(["dynamic", "registry", "persistence"], "[DYNAMIC] Registry modified for persistence.", "PERSISTENCE")
 
-            # File System Activity
+            # ניטור בתיקייה
             if "file created" in log_lower or "file modified" in log_lower:
+                # בדיקה האם יצר קובץ הרצה, הפלת פיילוד
                 if any(ext in log_lower for ext in [".exe", ".bat", ".dll", ".ps1"]):
                     self._add_score(["dynamic", "file_system", "drop_exe"], "[DYNAMIC] Dropped executable/script file to disk.", "FILE_DROP")
+                # בודק אם היה שינוי בתיקיית הליבה
                 elif "windows\\system32" in log_lower:
                     self._add_score(["dynamic", "file_system", "system32_touch"], "[DYNAMIC] Attempted to modify critical System32 directory.", "CRITICAL_FS")
+                # האם נוצר קובץ טקסט, מראה על תוכנה כופרה
                 elif ".txt" in log_lower:
                     self._add_score(["dynamic", "file_system", "ransom_note"], "[DYNAMIC] Suspicious text file created (Potential Ransom Note).", "RANSOM_NOTE")
 
-            # Network Activity
+            # ניטור רשת
             if "http request" in log_lower or "dns query" in log_lower or "ja3 signature" in log_lower:
                 self._add_score(["dynamic", "network", "c2_beacon"], "[DYNAMIC] Network connection established (Potential C2).", "NETWORK_C2")
-            if "ftp credentials" in log_lower:
-                self._add_score(["dynamic", "network", "ftp_leak"], "[DYNAMIC] Detected credential leak over FTP.", "DATA_LEAK")
-
+ 
     def _apply_synergy_rules(self):
         """
         מנוע הסינרגיה: מזהה דפוסי פעולה מורכבים המשלבים מספר פעולות יחד (Context-Aware Scoring).

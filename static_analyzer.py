@@ -501,6 +501,7 @@ class StaticAnalyzer:
             imports_dict = {}
             found_suspicious_apis = []
             
+            # בודק אם לקובץ יש טבלת יבוא
             if hasattr(pe, 'DIRECTORY_ENTRY_IMPORT'):
                 # סורק את הקובץ ומציא משם את כל קבצי הdll שהקובץ אומר שהוא צריך
                 for entry in pe.DIRECTORY_ENTRY_IMPORT:
@@ -541,6 +542,7 @@ class StaticAnalyzer:
                 print("    [-] Error: No executable code section found for disassembly.")
                 return False
                 
+            # הביטים הגולמיים של הסקשן
             code_data = code_section.get_data()
             risk_score = 0
             
@@ -552,6 +554,7 @@ class StaticAnalyzer:
             with open("heuristics.json", 'r', encoding='utf-8') as f:
                 heuristics_found = json.load(f)
             
+            # ממיר באמצעות אסמבלי את הקוד לפקודות אסמבלי קריאות
             instructions = md.disasm(code_data, code_section.VirtualAddress)
             
             # מחפש שרשראות של פקודות לא לגיטימיות
@@ -559,7 +562,9 @@ class StaticAnalyzer:
                 if i >= 10000:
                     break
                     
+                # הפקודה
                 mnemonic = inst.mnemonic.lower()
+                # האופרנד שעליו הפקודה פועלת
                 op_str = inst.op_str.lower()
                 
                 previous_instructions.append(mnemonic)
@@ -576,17 +581,22 @@ class StaticAnalyzer:
                     if len(previous_instructions) >= 2 and previous_instructions[-2] in ['call', 'jmp']:
                         chained_calls_detected += 1
                         
+                # דפוס של וירוס שמנסה לטעון ספרייה לזיכרון בצורה דינמית, דוחף את שם הפונקציה ואז קורא לLoadlibrary
                 if mnemonic == 'call' and 'push' in previous_instructions:
                     dynamic_api_resolutions += 1
 
+                # פקודת rdtsc בשביל זמני מעבד, זמני מעבד ב vm הרבה יותר גדולים
                 if mnemonic == 'rdtsc' and not heuristics_found["rdtsc_anti_vm"]:
                     risk_score += 10
                     heuristics_found["rdtsc_anti_vm"] = True
                     
+                # פקודה שמבקשת מידע על החומרה של המחשב, כמו המעבד
                 if mnemonic == 'cpuid' and not heuristics_found["cpuid_evasion"]:
                     risk_score += 10
                     heuristics_found["cpuid_evasion"] = True
                     
+                # ניסיון גישה לpeb מראה על הזרקת קוד
+                # אפשר דרכם לטעון פונקציות זדוניות לתוך ספריות
                 if ('fs:[' in op_str and '30' in op_str) or ('gs:[' in op_str and '60' in op_str):
                     if not heuristics_found["peb_direct_access"]:
                         risk_score += 30

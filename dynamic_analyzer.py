@@ -51,8 +51,10 @@ class DynamicAnalyzer:
     def _connect_ssh_with_retry(self, public_ip, max_retries=6, delay=15):
         """פונקציית עזר שמנסה להתחבר ל-SSH מספר פעמים, כי לווינדוס לוקח זמן לעלות"""
         ssh = paramiko.SSHClient()
+        # תסמוך על כל מפתח אבטחה
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
+        # לולאת נסיונות
         print("[*] Waiting for Windows SSH service to initialize...")
         for attempt in range(max_retries):
             try:
@@ -92,6 +94,7 @@ class DynamicAnalyzer:
             print("[*] Executing analysis agent in the cloud (Takes ~15-30 seconds)...")
             # הפעלת הסוכן 
             stdin, stdout, stderr = ssh.exec_command(f"python C:\\Sandbox\\agent.py {remote_malware_path}")
+            # מחזיר שלושה ערוצים: קלט, פלט, ופלט שגיאות
             
             # ממתינים שהפקודה תסיים לרוץ בענן
             exit_status = stdout.channel.recv_exit_status()
