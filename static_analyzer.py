@@ -7,6 +7,7 @@ import hashlib
 import re
 import base64
 import capstone
+import json
 
 class StaticAnalyzer:
     def __init__(self, file_path, db_manager=None, vt_api=None):
@@ -14,39 +15,8 @@ class StaticAnalyzer:
         self.db_manager = db_manager
         self.vt_api = vt_api
 
-        self.results = {
-            # 1. בדיקת כותרות
-            "is_valid_pe": False,          # האם הקובץ הוא באמת קובץ הרצה תקין
-            "suspicious_header": False,    # האם מצאנו חריגות בתאריך הקימפול או בגודל הכותרת
-            "entry_point": "",             # הכתובת ההקסדצימלית של נקודת הכניסה
-            "ep_section": "",              # שם המקטע שבו נמצאת נקודת הכניסה
-            "is_ep_suspicious": False,     # האם נקודת הכניסה נמצאת במקטע לא שגרתי
-
-            # 2. ניתוח מקטעים
-            "sections_info": [],           # רשימה שתאחסן מילון לכל מקטע עם השם, הגדלים והאנטרופיה שלו
-            "is_packed": False,             # דגל כללי שמעיד אם הקובץ דחוס/מוצפן (לפי UPX, אנטרופיה או יחסי גדלים)
-            
-            # 3. זיהוי דחיסה ופירוק
-            "unpacked_successful": False,  # מסמן האם תהליך הפריקה של UPX הצליח במלואו
-
-            # 4. חישוב ובדיקת חתימות
-            "file_hash": "",               # חתימת SHA-256 של הקובץ המלא
-            "is_hash_malicious": "unknown",# הסטטוס של הקובץ השלם ("malicious", "safe", "unknown")
-            "section_hashes": {},           # מילון שישמור לכל שם סקשן את ה-hash והסטטוס שלו
-
-            # 5. חילוץ ובדיקת כתובות
-            "network_iocs": {},            # מילון שישמור כתובות IP ו-URLs שנמצאו (המפתח הוא הכתובת, הערך הוא הסטטוס)
-            "decoded_strings": [],         # רשימה של מחרוזות שהצלחנו לפענח מקידוד Base64 או XOR
-            "obfuscation_detected": False,  # דגל שנדלק אם זיהינו שימוש אקטיבי בהסתרת מחרוזות
-
-            # 6. ניתוח אסמבלי
-            "imported_functions": {},      # מילון של כל ה-DLLs והפונקציות שהקובץ טוען
-            "suspicious_imports": [],      # רשימה מסוננת של פונקציות מסוכנות במיוחד שנמצאו
-            "assembly_risk_score": 0,      # ציון הסיכון שחושב מניתוח פקודות האסמבלי
-            "assembly_heuristics": {},     # אילו טקטיקות התחמקות ספציפיות זוהו בקוד
-            "call_jmp_table": [],
-            "is_assembly_suspicious": False # דגל סופי שאומר האם התנהגות הקוד ברמת המכונה חשודה
-        }
+        with open("results.json", "r") as f:
+            self.results = json.load(f)
         
     def verify_pe(self):
         """
@@ -319,18 +289,11 @@ class StaticAnalyzer:
             try:
                 db_verdict = self.db_manager.check_hash_file(full_file_hash)
                 
-                if db_verdict == 'malicious':
-                    print("[!] Alert: File hash found in local DB and marked as Malicious!")
-                    self.results["is_hash_malicious"] = "malicious"
-                    return True # חוסכים זמן, סיימנו את הניתוח
-                elif db_verdict == "suspicious":
-                    print("[!] Alert: File hash found in local DB and marked as Suspicious!")
-                    self.results["is_hash_malicious"] = "suspicious"
+                if db_verdict == 'malicious' or db_verdict == 'suspicious' or db_verdict == 'safe':
+                    print(f"[!] Alert: File hash found in local DB and marked as {db_verdict}!")
+                    self.results["is_hash_malicious"] = db_verdict
                     return True
-                elif db_verdict == 'safe':
-                    print("[+] Database: File hash is known and marked as Safe.")
-                    self.results["is_hash_malicious"] = "safe"
-                    return True 
+                
             except Exception as e:
                 print(f"[-] Error connecting to local Database: {e}")
         else:
@@ -339,13 +302,9 @@ class StaticAnalyzer:
         if self.vt_api:
             try:
                 vt_verdict = self.vt_api.check_file_hash(full_file_hash)
-                if vt_verdict == 'malicious':
-                    print("[!] Alert: File hash found in VirusTotal and marked as Malicious!")
-                    self.results["is_hash_malicious"] = "malicious"
-                    return True
-                elif vt_verdict == 'safe':
-                    print("[+] VirusTotal: File hash is known and marked as Safe.")
-                    self.results["is_hash_malicious"] = "safe"
+                if vt_verdict == 'malicious' or vt_verdict == 'safe':
+                    print(f"[!] Alert: File hash found in VirusTotal and marked as {vt_verdict}!")
+                    self.results["is_hash_malicious"] = db_verdict
                     return True
             except Exception as e:
                 print(f"[-] Error connecting to VirusTotal API: {e}")
@@ -375,10 +334,8 @@ class StaticAnalyzer:
                             db_sec_verdict = self.db_manager.check_section_hash(sec_name, sec_hash)
                             if db_sec_verdict:
                                 status = db_sec_verdict
-                                if status == "malicious":
-                                    print(f"       [!] Alert: Section '{sec_name}' identified as MALICIOUS in DB!")
-                                elif status == "safe":
-                                    print(f"       [+] Section '{sec_name}' identified as SAFE in DB.")
+                                if status == "malicious" or status == 'safe':
+                                    print(f"       [!] Alert: Section '{sec_name}' identified as {db_verdict} in DB!")
                         except Exception as e:
                             print(f"       [-] Error checking section hash in DB: {e}")
                     
@@ -506,10 +463,8 @@ class StaticAnalyzer:
                 db_verdict = self.db_manager.check_ips_urls(ioc_value, ioc_type)
                 if db_verdict:
                     status = db_verdict
-                    if status == 'malicious':
-                        print(f"       [!] Alert: {ioc_type.upper()} identified as MALICIOUS in local DB!")
-                    elif status == 'safe':
-                        print(f"       [+] {ioc_type.upper()} identified as SAFE in local DB.")
+                    if status == 'malicious' or status == 'safe':
+                        print(f"       [!] Alert: {ioc_type.upper()} identified as {status} in local DB!")
             except Exception as e:
                 print(f"       [-] DB Check Error: {e}")
                 
@@ -518,10 +473,8 @@ class StaticAnalyzer:
                 vt_verdict = self.vt_api.check_ip_url(ioc_value, ioc_type)
                 if vt_verdict:
                     status = vt_verdict
-                    if status == 'malicious':
-                        print(f"       [!] Alert: {ioc_type.upper()} identified as MALICIOUS in VirusTotal!")
-                    elif status == 'safe':
-                        print(f"       [+] {ioc_type.upper()} identified as SAFE in VirusTotal.")
+                    if status == 'malicious' or status == 'safe':
+                        print(f"       [!] Alert: {ioc_type.upper()} identified as {vt_verdict} in VirusTotal!")
             except Exception as e:
                 print(f"       [-] VirusTotal Check Error: {e}")
                 
@@ -542,11 +495,8 @@ class StaticAnalyzer:
             pe = pefile.PE(self.file_path)
             
             # חילוץ וניתוח טבלת IAT
-            dangerous_apis = [
-                'virtualalloc', 'virtualallocex', 'writeprocessmemory', 
-                'createremotethread', 'loadlibrarya', 'getprocaddress', 
-                'setwindowshookex', 'isdebuggerpresent', 'sleep'
-            ]
+            with open("dangerous_apis.json", 'r', encoding='utf-8') as f:
+                dangerous_apis = json.load(f)
             
             imports_dict = {}
             found_suspicious_apis = []
@@ -598,14 +548,9 @@ class StaticAnalyzer:
             chained_calls_detected = 0
             dynamic_api_resolutions = 0
             previous_instructions = [] 
-            
-            heuristics_found = {
-                "rdtsc_anti_vm": False,
-                "cpuid_evasion": False,
-                "peb_direct_access": False,
-                "dynamic_api_loading": False,
-                "chained_execution": False
-            }
+
+            with open("heuristics.json", 'r', encoding='utf-8') as f:
+                heuristics_found = json.load(f)
             
             instructions = md.disasm(code_data, code_section.VirtualAddress)
             
@@ -647,7 +592,7 @@ class StaticAnalyzer:
                         risk_score += 30
                         heuristics_found["peb_direct_access"] = True
 
-            if chained_calls_detected > 30:
+            if chained_calls_detected > 100:
                 print(f"    [!] Heuristic: Detected {chained_calls_detected} chained JMP/CALL instructions.")
                 risk_score += 15
                 heuristics_found["chained_execution"] = True
@@ -663,12 +608,9 @@ class StaticAnalyzer:
             self.results["assembly_heuristics"] = heuristics_found
             self.results["call_jmp_table"] = call_jmp_table 
             
-            if risk_score >= 30 or len(found_suspicious_apis) > 3:
-                print("[!] Alert: Code is considered HIGHLY SUSPICIOUS based on Assembly flow and IAT.")
-                self.results["is_assembly_suspicious"] = True
-            else:
-                print("[+] Assembly flow and IAT look behaviorally normal.")
-                self.results["is_assembly_suspicious"] = False
+
+            self.results["is_assembly_suspicious"] = risk_score >= 30 or len(found_suspicious_apis) > 3
+
                 
             return True
 

@@ -3,14 +3,10 @@ import time
 import subprocess
 import threading
 import json
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-import frida
 import ctypes
 import ctypes.wintypes as wintypes
-import threading
-import time
 import os
+from win_apis import STARTUPINFO, PROCESS_INFORMATION, DEBUG_EVENT
 
 
 # Custome File Monitor
@@ -90,40 +86,18 @@ class CustomDirectoryMonitor(threading.Thread):
 # Custom Native Debugger
 class CustomNativeDebugger(threading.Thread):
     """
-    מנגנון מיני-דיבאגר בסיסי ב-Python שמתמשק ל-Windows Debug API.
-    מחליף את Frida על ידי מעקב אחרי אירועי מערכת (טעינת DLLs, חריגות, וכו') 
-    ללא הזרקת קוד.
+    דיבאגר לוירוס - נותן מידע על טעינת ספריות dll 
     """
-    def __init__(self, malware_path, event_list):
+    def __init__(self, malware_path, event_list, process_tree):
         super().__init__()
         self.malware_path = malware_path
         self.event_list = event_list
+        self.process_tree = process_tree
         self.running = True
         self.daemon = True
 
     def run(self):
         DEBUG_ONLY_THIS_PROCESS = 0x00000002
-        
-        # מבנים של ווינדוס (Structures)
-        class STARTUPINFO(ctypes.Structure):
-            _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), 
-                        ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
-                        ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
-                        ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
-                        ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
-                        ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
-                        ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
-                        ("lpReserved2", ctypes.POINTER(wintypes.BYTE)),
-                        ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE),
-                        ("hStdError", wintypes.HANDLE)]
-
-        class PROCESS_INFORMATION(ctypes.Structure):
-            _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
-                        ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
-
-        class DEBUG_EVENT(ctypes.Structure):
-            _fields_ = [("dwDebugEventCode", wintypes.DWORD), ("dwProcessId", wintypes.DWORD),
-                        ("dwThreadId", wintypes.DWORD), ("u", ctypes.c_byte * 160)]
 
         startupinfo = STARTUPINFO()
         startupinfo.cb = ctypes.sizeof(startupinfo)
@@ -139,6 +113,9 @@ class CustomNativeDebugger(threading.Thread):
         if not success:
             print("[-] Custom Debugger Error: Failed to launch target.")
             return
+            
+        # רושמים את התהליך הראשי לעץ התהליכים
+        self.process_tree["Root"] = {"PID": processinfo.dwProcessId, "Children": []}
 
         debug_event = DEBUG_EVENT()
         DBG_CONTINUE = 0x00010002
@@ -149,14 +126,19 @@ class CustomNativeDebugger(threading.Thread):
             if ctypes.windll.kernel32.WaitForDebugEvent(ctypes.byref(debug_event), 100):
                 event_code = debug_event.dwDebugEventCode
                 
-                if event_code == 1:
-                    self.event_list.append("[NATIVE DEBUGGER] EXCEPTION intercepted in target process.")
-                elif event_code == 2:
-                    self.event_list.append(f"[NATIVE DEBUGGER] Target spawned a new thread (TID: {debug_event.dwThreadId}).")
-                elif event_code == 6: # LOAD_DLL_DEBUG_EVENT
-                    self.event_list.append("[NATIVE DEBUGGER] Target dynamically loaded a DLL into memory.")
+                debug_messages = {
+                    1: "[NATIVE DEBUGGER] EXCEPTION intercepted in target process.",
+                    2: "[NATIVE DEBUGGER] Target spawned a new thread (TID: {tid}).",
+                    6: "[NATIVE DEBUGGER] Target dynamically loaded a DLL into memory."
+                    }
+            
+                if event_code in debug_messages.keys():
+                    # שולף את ההודעה מהמילון, מציב את ה-TID (אם צריך), ודוחף לרשימה
+                    self.event_list.append(debug_messages[event_code].format(tid=debug_event.dwThreadId))
+
                 elif event_code == 5: # EXIT_PROCESS_DEBUG_EVENT
                     ctypes.windll.kernel32.ContinueDebugEvent(debug_event.dwProcessId, debug_event.dwThreadId, DBG_CONTINUE)
+                    print("[*] Target exited normally within debugger.")
                     break
                 
                 # שחרור הוירוס להמשך פעולה
@@ -166,24 +148,6 @@ class CustomNativeDebugger(threading.Thread):
         ctypes.windll.kernel32.TerminateProcess(processinfo.hProcess, 0)
         ctypes.windll.kernel32.CloseHandle(processinfo.hProcess)
         ctypes.windll.kernel32.CloseHandle(processinfo.hThread)
-
-
-class SandboxFileMonitor(FileSystemEventHandler):
-    def __init__(self, event_list):
-        self.event_list = event_list
-    # מאזינה ברקע למערכת ההפעלה
-
-    def on_created(self, event):
-        if not event.is_directory:
-            self.event_list.append(f"[{time.strftime('%H:%M:%S')}] FILE CREATED: {event.src_path}")
-
-    def on_modified(self, event):
-        if not event.is_directory:
-            self.event_list.append(f"[{time.strftime('%H:%M:%S')}] FILE MODIFIED: {event.src_path}")
-
-    def on_deleted(self, event):
-        if not event.is_directory:
-            self.event_list.append(f"[{time.strftime('%H:%M:%S')}] FILE DELETED: {event.src_path}")
 
 
 class AdvancedSandboxAgent:
@@ -202,14 +166,16 @@ class AdvancedSandboxAgent:
         self.network_events = []
         self.process_tree = {} 
         self.running = True
+        
+        # משתנים לשמירת האובייקטים של המנגנונים המותאמים אישית שלנו
+        self.fs_monitor = None
+        self.debugger = None
 
     def start_filesystem_watcher(self):
-        """ מפעיל את ה-FileSystemWatcher באמצעות Watchdog """
-        event_handler = SandboxFileMonitor(self.file_events)
-        self.observer = Observer()
-        self.observer.schedule(event_handler, self.watch_dir, recursive=True)
-        self.observer.start()
-        print("[+] FileSystemWatcher initialized.")
+        """ מפעיל את ה-FileSystemWatcher המותאם אישית שלנו (CustomDirectoryMonitor) """
+        self.fs_monitor = CustomDirectoryMonitor(self.watch_dir, self.file_events)
+        self.fs_monitor.start()
+        print("[+] Custom FileSystemWatcher initialized natively.")
 
     def start_etw_monitoring(self):
         """ מפעיל האזנה ברמת ה-Kernel דרך מנגנון ETW האמיתי של Windows """
@@ -236,65 +202,23 @@ class AdvancedSandboxAgent:
             print("[-] Error: Tshark is not configured in the system Path.")
             return None
 
-    def setup_dll_hooking(self, pid):
-        """ מתחבר לתהליך הזדוני ומבצע DLL Hooking לפונקציות API קריטיות """
-        try:
-            session = frida.attach(pid)
-            # סקריפט JS שמוזרק לזיכרון של התהליך ותופס את הפעולות שלו
-            script_code = """
-            Interceptor.attach(Module.findExportByName('kernel32.dll', 'VirtualAlloc'), {
-                onEnter: function (args) {
-                send({ api: 'VirtualAlloc', details: 'Allocated ' + args[1].toInt32() + ' bytes' });                }
-            });
-            Interceptor.attach(Module.findExportByName('kernel32.dll', 'CreateFileW'), {
-                onEnter: function (args) {
-                    send({ api: 'CreateFileW', details: 'Accessed file: ' + Memory.readUtf16String(args[0]) });
-                }
-            });
-            Interceptor.attach(Module.findExportByName('advapi32.dll', 'RegSetValueExW'), {
-                onEnter: function (args) {
-                    // ברגע שוירוס מנסה לכתוב ערך לרג'יסטרי, נשלח את מחרוזת הקסם שההיוריסטיקה מחפשת
-                    send({ api: 'RegSetValueExW', details: 'REGISTRY MODIFIED - Attempted to set registry key value' });
-                }
-            });
-            """
-            script = session.create_script(script_code)
-            
-            def on_message(message, data):
-                if message['type'] == 'send':
-                    payload = message['payload']
-                    self.api_hooks_events.append(f"[DLL HOOK] {payload['api']} -> {payload['details']}")
-            
-            script.on('message', on_message)
-            script.load()
-            print(f"[+] Frida DLL Hooking established successfully on PID {pid}.")
-        except Exception as e:
-            print(f"[-] Frida Hooking failed: {e}")
-
     def detonate_malware(self):
-        print(f"[*] Detonating target binary: {os.path.basename(self.malware_path)}")
+        print(f"[*] Detonating target binary natively: {os.path.basename(self.malware_path)}")
         try:
-            # הפעלת הנוזקה
-            proc = subprocess.Popen([self.malware_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # הפעלת הנוזקה דרך הדיבאגר המותאם אישית שלנו (מחליף את הקריאה ל-subprocess.Popen ול-frida)
+            self.debugger = CustomNativeDebugger(self.malware_path, self.api_hooks_events, self.process_tree)
+            self.debugger.start()
             
-            # רושמים את התהליך הראשי לעץ התהליכים
-            self.process_tree["Root"] = {"PID": proc.pid, "Children": []}
+            # נותנים לנוזקה זמן לרוץ (הדיבאגר מוגבל בפנים ל-10 שניות)
+            self.debugger.join(timeout=12)
             
-            # חיבור ה-DLL Hooking מיד לאחר ההפעלה
-            time.sleep(0.5) 
-            self.setup_dll_hooking(proc.pid)
-            
-            # נותנים לנוזקה זמן לרוץ
-            time.sleep(10)
-            
-            if proc.poll() is None:
-                proc.terminate()
-                print("[*] Target execution timed out and was safely terminated.")
-            else:
-                print(f"[*] Target exited normally with exit code: {proc.returncode}")
+            if self.debugger.is_alive():
+                print("[*] Target execution timed out and debugger is stopping it.")
+                self.debugger.running = False
+                self.debugger.join()
                 
         except Exception as e:
-            print(f"[-] Critical error during detonation: {e}")
+            print(f"[-] Critical error during native detonation: {e}")
 
     def stop_etw_monitoring(self):
         """ עוצר את ה-ETW וממיר את התוצאות לפורמט קריא """
@@ -349,13 +273,13 @@ class AdvancedSandboxAgent:
         report.append("--- PROCESS TREE & ETW LOGS ---")
         report.append(json.dumps(self.process_tree, indent=4))
 
-        report.append("\n--- API MONITORING (DLL HOOKING) ---")
+        report.append("\n--- API MONITORING (NATIVE DEBUGGER) ---")
         if self.api_hooks_events:
             report.extend(self.api_hooks_events)
         else:
-            report.append("[+] No hooked API calls intercepted.")
+            report.append("[+] No debug events intercepted.")
 
-        report.append("\n--- OS FILE SYSTEM LOGS (WATCHDOG) ---")
+        report.append("\n--- OS FILE SYSTEM LOGS (CUSTOM MONITOR) ---")
         if self.file_events:
             report.extend(list(dict.fromkeys(self.file_events)))
         else:
@@ -380,9 +304,9 @@ class AdvancedSandboxAgent:
         time.sleep(2) 
         self.detonate_malware()
         
-        self.running = False
-        self.observer.stop()
-        self.observer.join()
+        # עצירת מנגנון הקבצים המותאם אישית שלנו
+        if self.fs_monitor:
+            self.fs_monitor.running = False
         
         self.stop_etw_monitoring()
         

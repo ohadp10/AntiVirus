@@ -1,0 +1,7 @@
+{
+    "rdtsc_anti_vm": false,
+    "cpuid_evasion": false,
+    "peb_direct_access": false,
+    "dynamic_api_loading": false,
+    "chained_execution": false
+}

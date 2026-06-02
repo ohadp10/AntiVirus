@@ -1,0 +1,22 @@
+{
+    "is_valid_pe": false,
+    "suspicious_header": false,
+    "entry_point": "",
+    "ep_section": "",
+    "is_ep_suspicious": false,
+    "sections_info": [],
+    "is_packed": false,
+    "unpacked_successful": false,
+    "file_hash": "",
+    "is_hash_malicious": "unknown",
+    "section_hashes": {},
+    "network_iocs": {},
+    "decoded_strings": [],
+    "obfuscation_detected": false,
+    "imported_functions": {},
+    "suspicious_imports": [],
+    "assembly_risk_score": 0,
+    "assembly_heuristics": {},
+    "call_jmp_table": [],
+    "is_assembly_suspicious": false
+}

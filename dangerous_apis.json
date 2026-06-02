@@ -1,0 +1,11 @@
+[
+    "virtualalloc",
+    "virtualallocex",
+    "writeprocessmemory",
+    "createremotethread",
+    "loadlibrarya",
+    "getprocaddress",
+    "setwindowshookex",
+    "isdebuggerpresent",
+    "sleep"
+]

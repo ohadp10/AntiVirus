@@ -1,23 +1,13 @@
+import json
+
 class HeuristicRuleEngine:
     def __init__(self, static_results, dynamic_logs):
         self.static_results = static_results
         self.dynamic_logs = dynamic_logs
         
         # 1. עץ האיומים (Behavioral Threat Tree)
-        self.threat_tree = {
-            "static": {
-                "structure": {"suspicious_ep": 15},
-                "obfuscation": {"custom_packer": 15, "high_entropy": 20},
-                "imports": {"suspicious_api": 10},
-                "assembly": {"anti_vm": 20, "dynamic_chains": 20}
-            },
-            "dynamic": {
-                "process": {"shell_spawn": 15, "injection": 40},
-                "registry": {"persistence": 25},
-                "file_system": {"drop_exe": 20, "ransom_note": 15, "system32_touch": 25},
-                "network": {"c2_beacon": 25, "ftp_leak": 30}
-            }
-        }
+        with open("threat_tree.json", 'r', encoding='utf-8') as f:
+            self.threat_tree = json.load(f)
         
         self.threat_score = 0
         self.insights = []
@@ -28,8 +18,7 @@ class HeuristicRuleEngine:
 
     def _add_score(self, category_path, insight_message, flag_to_add=None):
         """
-        פונקציה חכמה להוספת ניקוד באמצעות מנגנון דעיכה (Decay).
-        category_path: למשל ["static", "obfuscation", "high_entropy"]
+        מוסיף ניקוד לפי מנגנון דעיכה
         """
         # שליפת משקל הבסיס מתוך עץ ההחלטות
         base_score = self.threat_tree
@@ -61,6 +50,7 @@ class HeuristicRuleEngine:
 
     def _evaluate_static_data(self):
         """ סריקת עץ הסטטיקה """
+
         # Structure
         if self.static_results.get("is_ep_suspicious"):
             self._add_score(["static", "structure", "suspicious_ep"], "[STATIC] Suspicious Entry Point detected.", "EVASION")
@@ -127,17 +117,14 @@ class HeuristicRuleEngine:
         """
         מנוע הסינרגיה: מזהה דפוסי פעולה מורכבים המשלבים מספר פעולות יחד (Context-Aware Scoring).
         """
-        if "OBFUSCATION" in self.flags and "NETWORK_C2" in self.flags and "FILE_DROP" in self.flags:
-            self.threat_score = int(self.threat_score * 1.3)
-            self.insights.append("[SYNERGY] Dropper Pattern Detected: Obfuscated file communicating externally to drop payloads (Score x1.3).")
-            
-        if "RANSOM_NOTE" in self.flags and "OBFUSCATION" in self.flags and "SHELL_EXEC" in self.flags:
-            self.threat_score += 30
-            self.insights.append("[SYNERGY] Ransomware Pattern Detected: Encrypted payload executing shells and dropping text files (+30).")
-            
-        if "PERSISTENCE" in self.flags and "INJECTION" in self.flags and "EVASION" in self.flags:
-            self.threat_score = int(self.threat_score * 1.5)
-            self.insights.append("[SYNERGY] Stealth APT Detected: Code injection combined with registry persistence and evasion techniques (Score x1.5).")
+        with open("synergy_rules.json", 'r', encoding='utf-8') as f:
+            synergy_rules = json.load(f)
+
+        for rule in synergy_rules:
+            # הפונקציה issubset בודקת בשורה אחת האם *כל* הדגלים הנדרשים קיימים במערכת
+            if set(rule["required_flags"]).issubset(self.flags):
+                self.threat_score = int(self.threat_score * rule["multiplier"]) + rule["bonus"]
+                self.insights.append(rule["message"])
 
     def calculate_threat_score(self):
         print("\n[*] Heuristic Engine: Calculating Threat Score using Behavioral Tree & Synergy...")

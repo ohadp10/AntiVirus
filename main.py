@@ -196,7 +196,8 @@ class StaticAnalysisFrame(ctk.CTkFrame):
         self.append_text(f"[ Entry Point ]: {results.get('entry_point')} (Section: {results.get('ep_section')})")
         self.append_text(f"[ Packed/Encrypted ]: {'Yes (High Entropy/UPX)' if results.get('is_packed') else 'No'}")
         self.append_text(f"[ Full File Hash ]: {results.get('file_hash')}")
-        self.append_text(f"[ Known Reputation ]: {results.get('is_hash_malicious').upper()}")
+        reputation = results.get('is_hash_malicious') or "unknown"
+        self.append_text(f"[ Known Reputation ]: {reputation.upper()}")
         
         if results.get("suspicious_imports"):
             self.append_text(f"\n[ Suspicious APIs ]: {', '.join(results.get('suspicious_imports'))}")

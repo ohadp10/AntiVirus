@@ -1,0 +1,14 @@
+{
+    "static": {
+        "structure": {"suspicious_ep": 15},
+        "obfuscation": {"custom_packer": 15, "high_entropy": 20},
+        "imports": {"suspicious_api": 10},
+        "assembly": {"anti_vm": 20, "dynamic_chains": 20}
+    },
+    "dynamic": {
+        "process": {"shell_spawn": 15, "injection": 40},
+        "registry": {"persistence": 25},
+        "file_system": {"drop_exe": 20, "ransom_note": 15, "system32_touch": 25},
+        "network": {"c2_beacon": 25, "ftp_leak": 30}
+    }
+}
